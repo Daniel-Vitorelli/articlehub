@@ -1,0 +1,32 @@
+name: Deploy Simplificado
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write # Dá permissão automática para salvar a imagem
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Login automático no GitHub
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Token automático, não precisa criar!
+
+      - name: Build e Push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:latest
+
+      - name: Avisar o Portainer
+        run: curl -X POST ${{ secrets.PORTAINER_WEBHOOK }}
