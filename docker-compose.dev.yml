@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  articlehub-dev:
+    build: .
+    image: articlehub-dev:latest
+    container_name: articlehub_dev_container
+    environment:
+      - APP_ENV=dev
+    volumes:
+      - articlehub-dev-sessions:/var/lib/php/sessions
+    networks:
+      - equinox-net
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      labels:
+        - "traefik.enable=true"
+        # Roteamento seguro via HTTPS para ahteste.ai-equinox.com
+        - "traefik.http.routers.articlehub-dev.rule=Host(`ahteste.ai-equinox.com`)"
+        - "traefik.http.routers.articlehub-dev.entrypoints=websecure"
+        - "traefik.http.routers.articlehub-dev.tls=true"
+        - "traefik.http.routers.articlehub-dev.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.articlehub-dev.service=articlehub-dev-service"
+        - "traefik.http.services.articlehub-dev-service.loadbalancer.server.port=80"
+
+networks:
+  equinox-net:
+    external: true
+
+volumes:
+  articlehub-dev-sessions:

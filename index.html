@@ -1,0 +1,1078 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Dashboard para gestão de solicitações de artigos - Arbitragem de Tráfego">
+  <title>ArticleHub — Painel de Solicitações</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+  <!-- ========== LOGIN SCREEN ========== -->
+  <div class="login-screen" id="loginScreen">
+    <div class="login-bg-shapes">
+      <div class="shape shape-1"></div>
+      <div class="shape shape-2"></div>
+      <div class="shape shape-3"></div>
+    </div>
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="brand-icon">📝</div>
+        <h1>ArticleHub</h1>
+        <p>Gestão de Conteúdo para Arbitragem de Tráfego</p>
+      </div>
+      <form id="loginForm">
+        <div class="form-group">
+          <label>Email</label>
+          <input type="email" class="form-input" id="loginEmail" placeholder="seu@email.com" required>
+        </div>
+        <div class="form-group">
+          <label>Senha</label>
+          <input type="password" class="form-input" id="loginPassword" placeholder="••••••••" required>
+        </div>
+        <div id="loginError" class="login-error"></div>
+        <button type="submit" class="btn-primary login-btn" id="loginBtn">
+          <span>🔐</span> Entrar
+        </button>
+      </form>
+      <div class="login-hint">
+        <p><strong>Acessos de demonstração:</strong></p>
+        <div class="hint-credentials">
+          <span>Admin: admin@hub.com / admin123</span>
+          <span>Gestor: fernando@hub.com / gestor123</span>
+          <span>Revisor: revisor@hub.com / revisor123</span>
+          <span>Redator: ana@hub.com / redator123</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== APP WRAPPER ========== -->
+  <div class="app-wrapper" id="appWrapper" style="display:none;">
+
+    <!-- ========== SIDEBAR ========== -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-icon">📝</div>
+        <div>
+          <h1>ArticleHub</h1>
+          <span class="brand-sub">Gestão de Conteúdo</span>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav">
+        <div class="nav-section">
+          <div class="nav-section-title">Principal</div>
+          <a href="#" class="nav-link active" data-view="dashboard">
+            <span class="nav-icon">📊</span>
+            Dashboard
+          </a>
+          <a href="#" class="nav-link" data-view="requests">
+            <span class="nav-icon">📄</span>
+            <span>Solicitações</span>
+            <span class="nav-badge" id="navBadgePending">0</span>
+          </a>
+          <a href="#" class="nav-link" data-view="messages">
+            <span class="nav-icon">💬</span>
+            <span>Mensagens</span>
+            <span class="nav-badge" id="navBadgeMessages">0</span>
+          </a>
+          <a href="#" class="nav-link" data-view="logs">
+            <span class="nav-icon">📋</span>
+            <span>Logs de Status</span>
+          </a>
+          <a href="#" class="nav-link" data-view="trash">
+            <span class="nav-icon">🗑</span>
+            <span>Lixeira</span>
+          </a>
+        </div>
+
+        <!-- Admin Only Section -->
+        <div class="nav-section admin-only" id="navAdminSection">
+          <div class="nav-section-title">Administração</div>
+          <a href="#" class="nav-link" data-view="users">
+            <span class="nav-icon">👥</span>
+            Usuários
+          </a>
+          <a href="#" class="nav-link" data-view="domains">
+            <span class="nav-icon">🌐</span>
+            Domínios / Blogs
+          </a>
+          <a href="#" class="nav-link" data-view="languages">
+            <span class="nav-icon">🌍</span>
+            Idiomas
+          </a>
+          <a href="#" class="nav-link" data-view="niches">
+            <span class="nav-icon">📂</span>
+            Nichos
+          </a>
+        </div>
+
+        <div class="nav-section">
+          <div class="nav-section-title">Sistema</div>
+          <a href="#" class="nav-link" id="btnLogout">
+            <span class="nav-icon">🚪</span>
+            Sair
+          </a>
+        </div>
+      </nav>
+
+      <div class="sidebar-user">
+        <div class="user-avatar" id="userAvatar">--</div>
+        <div class="user-info">
+          <div class="user-name" id="userName">—</div>
+          <div class="user-role" id="userRole">—</div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- ========== MAIN CONTENT ========== -->
+    <main class="main-content">
+
+      <!-- Header -->
+      <header class="header">
+        <div class="header-left">
+          <button class="mobile-toggle" id="mobileToggle" aria-label="Menu">☰</button>
+          <h2 id="pageTitle">Dashboard</h2>
+          <span class="header-date" id="headerDate"></span>
+        </div>
+        <div class="header-right">
+          <div class="search-box">
+            <span class="search-icon">🔍</span>
+            <input type="text" placeholder="Buscar artigos..." id="globalSearch" aria-label="Buscar artigos">
+          </div>
+          <div class="notif-wrapper">
+            <button class="notif-bell" id="notifBell" title="Notificações">🔔<span class="notif-count"
+                id="notifCount"></span></button>
+            <div class="notif-dropdown" id="notifDropdown">
+              <div class="notif-dropdown-header">
+                <h4>Notificações</h4>
+                <button class="notif-mark-all" id="notifMarkAll">Marcar todas como lidas</button>
+              </div>
+              <div class="notif-list" id="notifList"></div>
+            </div>
+          </div>
+          <button class="theme-toggle" id="themeToggle" title="Alternar tema">🌙</button>
+          <div class="user-role-badge" id="roleBadge">Admin</div>
+        </div>
+      </header>
+
+      <!-- ===== VIEW: DASHBOARD ===== -->
+      <div class="view-panel active" id="viewDashboard">
+        <div class="dashboard">
+
+          <!-- Stats Grid -->
+          <div class="stats-grid">
+            <div class="stat-card" data-stat-filter="" title="Ver todas as solicitações">
+              <div class="stat-header">
+                <div class="stat-icon">📋</div>
+                <span class="stat-trend up" id="trendTotal">+0%</span>
+              </div>
+              <div class="stat-value" id="statTotal">0</div>
+              <div class="stat-label">Total de Pedidos</div>
+            </div>
+            <div class="stat-card" data-stat-filter="pending" title="Ver pendentes">
+              <div class="stat-header">
+                <div class="stat-icon">⏳</div>
+                <span class="stat-trend up">Ativo</span>
+              </div>
+              <div class="stat-value" id="statPending">0</div>
+              <div class="stat-label">Pendentes</div>
+            </div>
+            <div class="stat-card" data-stat-filter="in-progress" title="Ver em produção">
+              <div class="stat-header">
+                <div class="stat-icon">✍️</div>
+                <span class="stat-trend up">Produção</span>
+              </div>
+              <div class="stat-value" id="statInProgress">0</div>
+              <div class="stat-label">Em Produção</div>
+            </div>
+            <div class="stat-card" data-stat-filter="done" title="Ver concluídos">
+              <div class="stat-header">
+                <div class="stat-icon">✅</div>
+                <span class="stat-trend up" id="trendDone">0%</span>
+              </div>
+              <div class="stat-value" id="statDone">0</div>
+              <div class="stat-label">Concluídos</div>
+            </div>
+            <div class="stat-card" id="statRevisadoCard" data-stat-filter="revisado" title="Ver revisados"
+              style="display:none;">
+              <div class="stat-header">
+                <div class="stat-icon">🔍</div>
+                <span class="stat-trend up">Revisão</span>
+              </div>
+              <div class="stat-value" id="statRevisado">0</div>
+              <div class="stat-label">Revisados</div>
+            </div>
+            <div class="stat-card" data-stat-filter="published" title="Ver publicados">
+              <div class="stat-header">
+                <div class="stat-icon">🌐</div>
+                <span class="stat-trend up">Online</span>
+              </div>
+              <div class="stat-value" id="statPublished">0</div>
+              <div class="stat-label">Publicados</div>
+            </div>
+          </div>
+
+          <!-- Recent Requests -->
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Solicitações Recentes</h3>
+              <div class="table-actions">
+                <button class="btn-primary gestor-admin-only" id="btnNewRequestDash">
+                  <span>＋</span> Nova Solicitação
+                </button>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Artigo / Palavra-chave</th>
+                  <th>Blog</th>
+                  <th>Redator</th>
+                  <th>Status</th>
+                  <th>Compliance</th>
+                  <th>Prioridade</th>
+                  <th>Prazo</th>
+                </tr>
+              </thead>
+              <tbody id="dashTableBody"></tbody>
+            </table>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ===== VIEW: SOLICITAÇÕES ===== -->
+      <div class="view-panel" id="viewRequests">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header table-header-requests">
+              <h3>Todas as Solicitações</h3>
+              <div class="table-actions table-actions-filters" style="flex-wrap:wrap;gap:6px;">
+                <select class="filter-select" id="filterStatus" aria-label="Filtrar por status">
+                  <option value="">Todos Status</option>
+                  <option value="pending">Pendente</option>
+                  <option value="in-progress">Em Produção</option>
+                  <option value="review">Em Revisão</option>
+                  <option value="done">Concluído</option>
+                  <option value="published">Publicado</option>
+                  <option value="revisado">Revisado</option>
+                </select>
+                <select class="filter-select" id="filterPriority" aria-label="Filtrar por prioridade">
+                  <option value="">Todas Prioridades</option>
+                  <option value="alta">Alta</option>
+                  <option value="media">Média</option>
+                  <option value="baixa">Baixa</option>
+                </select>
+                <select class="filter-select" id="filterBlog" aria-label="Filtrar por blog">
+                  <option value="">Todos Blogs</option>
+                </select>
+                <select class="filter-select" id="filterWriter" aria-label="Filtrar por redator">
+                  <option value="">Todos Redatores</option>
+                </select>
+                <select class="filter-select" id="filterRequester" aria-label="Filtrar por solicitante">
+                  <option value="">Todos Solicitantes</option>
+                </select>
+                <button class="btn-primary gestor-admin-only" id="btnNewRequest">
+                  <span>＋</span> Nova Solicitação
+                </button>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Artigo / Palavra-chave</th>
+                  <th>Blog</th>
+                  <th>Solicitante</th>
+                  <th>Redator</th>
+                  <th>Status</th>
+                  <th>Compliance</th>
+                  <th>Prioridade</th>
+                  <th>Prazo</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="requestsTableBody"></tbody>
+            </table>
+            <div class="table-footer">
+              <span id="tableInfo">Mostrando 0 de 0 solicitações</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: LIXEIRA ===== -->
+      <div class="view-panel" id="viewTrash">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header table-header-requests">
+              <h3>🗑 Lixeira</h3>
+              <div class="table-actions">
+                <span class="text-muted" style="font-size:0.85rem">Solicitações canceladas/excluídas</span>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Artigo / Palavra-chave</th>
+                  <th>Blog</th>
+                  <th>Solicitante</th>
+                  <th>Redator</th>
+                  <th>Status Original</th>
+                  <th>Prazo Orig.</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="trashTableBody"></tbody>
+            </table>
+            <div class="table-footer">
+              <span id="trashTableInfo">Nenhuma solicitação na lixeira</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: USUÁRIOS (ADMIN) ===== -->
+      <div class="view-panel" id="viewUsers">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Gerenciamento de Usuários</h3>
+              <div class="table-actions">
+                <button class="btn-primary" id="btnNewUser">
+                  <span>＋</span> Novo Usuário
+                </button>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Email</th>
+                  <th>Perfil</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="usersTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: LOGS DE STATUS (ADMIN/REVISOR) ===== -->
+      <div class="view-panel" id="viewLogs">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>📋 Logs de Alteração de Status</h3>
+              <div class="table-actions table-actions-filters" style="display:flex; align-items:center; gap:12px; margin-left:auto;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterLogDate" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Data</label>
+                  <input type="date" class="filter-date" id="filterLogDate">
+                </div>
+                <div id="filterLogUserGroup" style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterLogUser" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Usuário</label>
+                  <select class="filter-select" id="filterLogUser">
+                    <option value="">Todos os Usuários</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Data/Hora</th>
+                  <th>Usuário</th>
+                  <th>Artigo</th>
+                  <th>Blog</th>
+                  <th>Ação</th>
+                  <th>De</th>
+                  <th>Para</th>
+                </tr>
+              </thead>
+              <tbody id="logsTableBody"></tbody>
+            </table>
+            <div id="logsEmpty" style="text-align:center;padding:2rem;color:var(--text-muted);display:none">
+              Nenhum log encontrado para esta data.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: DOMÍNIOS (ADMIN) ===== -->
+      <div class="view-panel" id="viewDomains">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Domínios / Blogs Cadastrados</h3>
+              <div class="table-actions">
+                <button class="btn-primary" id="btnNewDomain">
+                  <span>＋</span> Novo Domínio
+                </button>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Nome do Blog</th>
+                  <th>Domínio (URL)</th>
+                  <th>Nicho</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="domainsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: IDIOMAS ===== -->
+      <div class="view-panel" id="viewLanguages">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Idiomas Cadastrados</h3>
+              <div class="table-actions">
+                <button class="btn-primary" id="btnNewLanguage">
+                  <span>＋</span> Novo Idioma
+                </button>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Código</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="languagesTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: NICHOS ===== -->
+      <div class="view-panel" id="viewNiches">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Nichos Cadastrados</h3>
+              <div class="table-actions">
+                <button class="btn-primary" id="btnNewNiche">
+                  <span>＋</span> Novo Nicho
+                </button>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Nome</th>
+                  <th>Status</th>
+                  <th>Ações</th>
+                </tr>
+              </thead>
+              <tbody id="nichesTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: MENSAGENS ===== -->
+      <div class="view-panel" id="viewMessages">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Mensagens</h3>
+              <div class="table-actions">
+                <div class="msg-tabs">
+                  <button class="msg-tab active" data-msg-tab="inbox">Recebidas</button>
+                  <button class="msg-tab" data-msg-tab="sent">Enviadas</button>
+                </div>
+                <button class="btn-primary" id="btnCompose">
+                  <span>✉️</span> Nova Mensagem
+                </button>
+              </div>
+            </div>
+            <div class="msg-list" id="msgListBody"></div>
+            <div class="table-footer">
+              <span id="msgInfo">Nenhuma mensagem</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <!-- ========== MODAL: DETALHE DA SOLICITAÇÃO ========== -->
+  <div class="modal-overlay detail-modal" id="modalDetail">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>📋 Detalhes da Solicitação</h3>
+        <button class="modal-close" data-close="modalDetail" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <div id="detailContent"></div>
+      </div>
+      <div class="modal-footer">
+        <!-- Populated dynamically by openDetail() -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: NOVA SOLICITAÇÃO ========== -->
+  <div class="modal-overlay" id="modalNew">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>✨ Nova Solicitação de Artigo</h3>
+        <button class="modal-close" data-close="modalNew" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formNewRequest">
+          <div class="form-group">
+            <label>Palavra-chave Principal <span class="required">*</span></label>
+            <input type="text" class="form-input" name="keyword" placeholder="Ex: melhores rotadores de pneus 2026" required>
+            <small class="text-muted" style="display:block; margin-top:4px;">Insira múltiplas palavras-chave separadas por vírgula para criar múltiplos pedidos simultâneos.</small>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Blog Destino <span class="required">*</span></label>
+              <select class="form-select" name="blog" id="selectBlog" required>
+                <option value="">Selecione...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Redator</label>
+              <select class="form-select" name="writer" id="selectWriter">
+                <option value="">Auto-atribuir</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" style="grid-template-columns: repeat(2, 1fr)">
+            <div class="form-group">
+              <label>Idioma <span class="required">*</span></label>
+              <select class="form-select" name="language" id="selectLanguage" required>
+                <option value="">Selecione...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Nicho <span class="required">*</span></label>
+              <select class="form-select" name="niche_id" id="selectNiche" required>
+                <option value="">Selecione...</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" style="grid-template-columns: repeat(3, 1fr)">
+            <div class="form-group">
+              <label>Finalidade <span class="required">*</span></label>
+              <select class="form-select" name="purpose" required>
+                <option value="conteudo">Conteúdo</option>
+                <option value="arbitragem">Arbitragem</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Tipo <span class="required">*</span></label>
+              <select class="form-select" name="content_type" required>
+                <option value="artigo">Artigo</option>
+                <option value="pagina">Página</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Volume de Palavras <span class="required">*</span></label>
+              <select class="form-select" name="wordcount" required>
+                <option value="">Selecione...</option>
+                <option value="500-800">500 – 800 palavras</option>
+                <option value="800-1200">800 – 1.200 palavras</option>
+                <option value="1200-1800">1.200 – 1.800 palavras</option>
+                <option value="1800-2500">1.800 – 2.500 palavras</option>
+                <option value="2500+">2.500+ palavras</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Prioridade <span class="required">*</span></label>
+              <select class="form-select" name="priority" required>
+                <option value="media">Média</option>
+                <option value="alta">Alta</option>
+                <option value="baixa">Baixa</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Prazo de Entrega <span class="required">*</span></label>
+            <input type="date" class="form-input" name="deadline" required>
+          </div>
+          <div class="form-group">
+            <label>Instruções para o Redator</label>
+            <textarea class="form-textarea" name="instructions"
+              placeholder="Observações sobre tom de voz, referências, links internos, CTA desejado..."></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalNew">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitRequest">
+          <span>🚀</span> Adicionar Solicitação
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: NOVO USUÁRIO ========== -->
+  <div class="modal-overlay" id="modalUser">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalUserTitle">👤 Novo Usuário</h3>
+        <button class="modal-close" data-close="modalUser" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formUser">
+          <input type="hidden" name="userId" id="userEditId">
+          <div class="form-group">
+            <label>Nome Completo <span class="required">*</span></label>
+            <input type="text" class="form-input" name="name" placeholder="Nome do usuário" required>
+          </div>
+          <div class="form-group">
+            <label>Email <span class="required">*</span></label>
+            <input type="email" class="form-input" name="email" placeholder="email@exemplo.com" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Perfil <span class="required">*</span></label>
+              <select class="form-select" name="role" required>
+                <option value="gestor">Gestor de Tráfego</option>
+                <option value="revisor">Revisor</option>
+                <option value="redator">Redator</option>
+                <option value="admin">Administrador</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Senha <span class="required">*</span></label>
+              <input type="password" class="form-input" name="password" placeholder="Mínimo 6 caracteres" required
+                minlength="6">
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalUser">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitUser">
+          <span>💾</span> Salvar Usuário
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: NOVO DOMÍNIO ========== -->
+  <div class="modal-overlay" id="modalDomain">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 id="modalDomainTitle">🌐 Novo Domínio</h3>
+        <button class="modal-close" data-close="modalDomain" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formDomain">
+          <input type="hidden" name="domainId" id="domainEditId">
+          <div class="form-group">
+            <label>Nome do Blog <span class="required">*</span></label>
+            <input type="text" class="form-input" name="blogName" placeholder="Ex: Finanças Plus" required>
+          </div>
+          <div class="form-group">
+            <label>Domínio / URL <span class="required">*</span></label>
+            <input type="url" class="form-input" name="url" placeholder="https://financasplus.com.br" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Nicho <span class="required">*</span></label>
+              <input type="text" class="form-input" name="niche" placeholder="Ex: Finanças, Saúde, Tech..." required>
+            </div>
+            <div class="form-group">
+              <label>Status</label>
+              <select class="form-select" name="active">
+                <option value="true">Ativo</option>
+                <option value="false">Inativo</option>
+              </select>
+            </div>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalDomain">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitDomain">
+          <span>💾</span> Salvar Domínio
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: EDITAR SOLICITAÇÃO ========== -->
+  <div class="modal-overlay" id="modalEdit">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>✏️ Editar Solicitação</h3>
+        <button class="modal-close" data-close="modalEdit" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formEditRequest">
+          <input type="hidden" name="editId" id="editRequestId">
+          <div class="form-group">
+            <label>Palavra-chave Principal <span class="required">*</span></label>
+            <input type="text" class="form-input" name="keyword" placeholder="Ex: melhores investimentos 2026" required>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Blog Destino <span class="required">*</span></label>
+              <select class="form-select" name="blog" id="editSelectBlog" required>
+                <option value="">Selecione...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Redator</label>
+              <select class="form-select" name="writer" id="editSelectWriter">
+                <option value="">Auto-atribuir</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" style="grid-template-columns: repeat(2, 1fr)">
+            <div class="form-group">
+              <label>Idioma <span class="required">*</span></label>
+              <select class="form-select" name="language" id="editSelectLanguage" required>
+                <option value="">Selecione...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Nicho <span class="required">*</span></label>
+              <select class="form-select" name="niche_id" id="editSelectNiche" required>
+                <option value="">Selecione...</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row" style="grid-template-columns: repeat(3, 1fr)">
+            <div class="form-group">
+              <label>Finalidade <span class="required">*</span></label>
+              <select class="form-select" name="purpose" required>
+                <option value="conteudo">Conteúdo</option>
+                <option value="arbitragem">Arbitragem</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Tipo <span class="required">*</span></label>
+              <select class="form-select" name="content_type" required>
+                <option value="artigo">Artigo</option>
+                <option value="pagina">Página</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Volume de Palavras <span class="required">*</span></label>
+              <select class="form-select" name="wordcount" required>
+                <option value="">Selecione...</option>
+                <option value="500-800">500 – 800 palavras</option>
+                <option value="800-1200">800 – 1.200 palavras</option>
+                <option value="1200-1800">1.200 – 1.800 palavras</option>
+                <option value="1800-2500">1.800 – 2.500 palavras</option>
+                <option value="2500+">2.500+ palavras</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Prioridade <span class="required">*</span></label>
+              <select class="form-select" name="priority" required>
+                <option value="media">Média</option>
+                <option value="alta">Alta</option>
+                <option value="baixa">Baixa</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Prazo de Entrega <span class="required">*</span></label>
+            <input type="date" class="form-input" name="deadline" required>
+          </div>
+          <div class="form-group">
+            <label>Instruções para o Redator</label>
+            <textarea class="form-textarea" name="instructions"
+              placeholder="Observações sobre tom de voz, referências, links internos, CTA desejado..."></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalEdit">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitEdit">
+          <span>💾</span> Salvar Alterações
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: PUBLICAR ARTIGO ========== -->
+  <div class="modal-overlay" id="modalPublish">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>🚀 Publicar Artigo</h3>
+        <button class="modal-close" data-close="modalPublish" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="publishRequestId">
+        <div class="publish-form">
+          <div class="form-group" style="margin-bottom:0">
+            <label>Link do Artigo Publicado <span class="required">*</span></label>
+            <input type="url" class="publish-url-input" id="publishUrl"
+              placeholder="https://seusite.com.br/artigo-publicado" required>
+          </div>
+          <div class="publish-host-hint" id="publishHostHint">
+            🏷️ Domínio esperado: <strong id="expectedHost">—</strong>
+          </div>
+          <div class="publish-status" id="publishStatus">
+            <span class="spinner" id="publishSpinner"></span>
+            <span id="publishStatusText"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalPublish">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitPublish">
+          <span>✅</span> Validar e Publicar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: CONCLUIR ARTIGO (WP Edit URL) ========== -->
+  <div class="modal-overlay" id="modalDone">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>✅ Concluir Artigo</h3>
+        <button class="modal-close" data-close="modalDone" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="doneRequestId">
+        <div class="publish-form">
+          <div class="form-group" style="margin-bottom:0">
+            <label>URL de Edição do WordPress <span class="required">*</span></label>
+            <input type="url" class="publish-url-input" id="doneWpUrl"
+              placeholder="https://seusite.com.br/wp-admin/post.php?post=123&action=edit" required>
+          </div>
+          <div class="publish-host-hint" id="doneHostHint">
+            🏷️ Domínio esperado: <strong id="doneExpectedHost">—</strong>
+          </div>
+          <div class="publish-status" id="doneStatus">
+            <span id="doneStatusText"></span>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalDone">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitDone">
+          <span>✅</span> Validar e Concluir
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: COMPOR MENSAGEM ========== -->
+  <div class="modal-overlay" id="modalCompose">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>✉️ Nova Mensagem</h3>
+        <button class="modal-close" data-close="modalCompose" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formCompose">
+          <div class="form-group">
+            <label>Destinatário <span class="required">*</span></label>
+            <select class="form-select" name="toId" id="composeToId" required>
+              <option value="">Selecione...</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Assunto <span class="required">*</span></label>
+            <input type="text" class="form-input" name="subject" placeholder="Assunto da mensagem" required>
+          </div>
+          <div class="form-group">
+            <label>Mensagem <span class="required">*</span></label>
+            <textarea class="form-textarea" name="body" rows="5" placeholder="Escreva sua mensagem..."
+              required></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalCompose">Cancelar</button>
+        <button class="btn-primary" id="btnSendMessage">
+          <span>📤</span> Enviar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: DETALHE DA MENSAGEM ========== -->
+  <div class="modal-overlay" id="modalMsgDetail">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>💬 Mensagem</h3>
+        <button class="modal-close" data-close="modalMsgDetail" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body" id="msgDetailContent"></div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalMsgDetail">Fechar</button>
+        <button class="btn-primary" id="btnReplyMessage">
+          <span>↩️</span> Responder
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: RESUMO DA ANÁLISE (COMPLIANCE) ========== -->
+  <div class="modal-overlay" id="modalCompliance">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>📋 Resumo da Análise</h3>
+        <button class="modal-close" data-close="modalCompliance" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="complianceResumo" style="white-space:pre-wrap;line-height:1.6;"></p>
+        <hr style="margin:16px 0; border-color: rgba(255,255,255,0.08);">
+        <h4 style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
+          📜 Histórico de Análises
+        </h4>
+        <div style="max-height:200px; overflow-y:auto;">
+          <table class="data-table" style="font-size:0.8rem;">
+            <thead>
+              <tr>
+                <th>Data/Hora</th>
+                <th>Status</th>
+                <th>Resumo</th>
+              </tr>
+            </thead>
+            <tbody id="complianceHistoryBody"></tbody>
+          </table>
+          <p id="complianceHistoryEmpty" style="display:none; text-align:center; padding:1rem; color:var(--text-muted);">
+            Nenhuma análise registrada.
+          </p>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalCompliance">Fechar</button>
+        <button class="btn-primary" id="btnResetCompliance">
+          <span>↺</span> Analisar Novamente
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: IDIOMA ========== -->
+  <div class="modal-overlay" id="modalLanguage">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>🌍 <span id="languageModalTitle">Novo Idioma</span></h3>
+        <button class="modal-close" data-close="modalLanguage" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formLanguage" novalidate>
+          <input type="hidden" id="languageId" value="">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Nome <span class="required">*</span></label>
+              <input type="text" class="form-input" name="name" placeholder="Ex: Português (BR)" required>
+            </div>
+            <div class="form-group">
+              <label>Código <span class="required">*</span></label>
+              <input type="text" class="form-input" name="code" placeholder="Ex: pt-br" required>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Status</label>
+            <select class="form-select" name="active">
+              <option value="1">Ativo</option>
+              <option value="0">Inativo</option>
+            </select>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalLanguage">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitLanguage">
+          <span>💾</span> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: NICHO ========== -->
+  <div class="modal-overlay" id="modalNiche">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>📂 <span id="nicheModalTitle">Novo Nicho</span></h3>
+        <button class="modal-close" data-close="modalNiche" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <form id="formNiche" novalidate>
+          <input type="hidden" id="nicheId" value="">
+          <div class="form-group">
+            <label>Nome <span class="required">*</span></label>
+            <input type="text" class="form-input" name="name" placeholder="Ex: Tecnologia" required>
+          </div>
+          <div class="form-group">
+            <label>Status</label>
+            <select class="form-select" name="active">
+              <option value="1">Ativo</option>
+              <option value="0">Inativo</option>
+            </select>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalNiche">Cancelar</button>
+        <button class="btn-primary" id="btnSubmitNiche">
+          <span>💾</span> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: PENDÊNCIAS ========== -->
+  <div class="modal-overlay" id="modalPendencies">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>⚠️ Pendências e Alertas</h3>
+        <button class="modal-close" data-close="modalPendencies" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted" style="margin-top: 0; margin-bottom: 15px; font-size: 0.9rem;">
+          Reporte ou resolva problemas nesta solicitação.
+        </p>
+        
+        <!-- Lista de Pendências Existentes -->
+        <div id="pendenciesList" class="pendencies-list" style="max-height: 250px; overflow-y: auto; margin-bottom: 20px;">
+          <!-- Injetado dinamicamente -->
+        </div>
+
+        <!-- Formulário para Nova Pendência -->
+        <form id="formNewPendency">
+          <input type="hidden" id="pendencyReqId">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label>Nova Pendência <span class="required">*</span></label>
+            <textarea id="pendencyDescription" class="form-textarea" rows="3" placeholder="Descreva o problema encontrado..." required></textarea>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalPendencies">Fechar</button>
+        <button class="btn-primary" id="btnSubmitPendency">
+          Adicionar Pendência
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

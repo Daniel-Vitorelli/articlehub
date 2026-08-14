@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: articlehub_db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: articlehub
+      MYSQL_USER: usr_articlehub
+      MYSQL_PASSWORD: Z9bnWlyAp[PK59sY
+    volumes:
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - db_data:/var/lib/mysql
+    ports:
+      - "3306:3306"
+    networks:
+      - equinox-net
+
+  articlehub:
+    environment:
+      - DB_HOST=db
+      - DB_NAME=articlehub
+      - DB_USER=usr_articlehub
+      - DB_PASS=Z9bnWlyAp[PK59sY
+    volumes:
+      - ./:/var/www/html
+    ports:
+      - "8080:80"
+    depends_on:
+      - db
+
+networks:
+  equinox-net:
+    external: false
+
+volumes:
+  db_data:

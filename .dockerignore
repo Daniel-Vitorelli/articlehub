@@ -1,0 +1,10 @@
+# Ignore unnecessary files
+.git
+.gitignore
+.DS_Store
+database/
+test_db.php
+*.md
+.gemini/
+.agent/
+node_modules/
