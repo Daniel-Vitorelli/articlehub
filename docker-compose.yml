@@ -1,7 +1,8 @@
 services:
   articlehub:
-    build: .
-    image: articlehub:latest
+    # 1. build: . foi removido
+    # 2. image foi atualizada para puxar direto do GitHub:
+    image: ghcr.io/daniel-vitorelli/articlehub:latest
     environment:
       - APP_ENV=prod
     extra_hosts:
