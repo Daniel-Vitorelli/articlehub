@@ -795,7 +795,7 @@ body::before {
   border: var(--glass-border);
   backdrop-filter: var(--glass-blur);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .table-header {
@@ -1167,7 +1167,7 @@ select.filter-select option {
 /* Resumo da análise (compliance) */
 #complianceResumo {
   max-height: 60vh;
-  overflow-y: auto;
+  overflow: auto;
 }
 .compliance-section {
   margin-bottom: 18px;
@@ -2385,11 +2385,6 @@ select.filter-select option {
 
   .form-row {
     grid-template-columns: 1fr;
-  }
-
-  .data-table {
-    display: block;
-    overflow-x: auto;
   }
 }
 

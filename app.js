@@ -21,7 +21,7 @@
   let currentMsgTab = 'inbox';
   let pollInterval = null;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.0.0';
+  const APP_VERSION = '1.0.1';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
