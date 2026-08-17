@@ -986,6 +986,14 @@ select.filter-select option {
   background: rgba(127, 90, 240, 0.04);
 }
 
+.compliance-history-row {
+  cursor: pointer;
+}
+
+.compliance-history-row:hover {
+  background: rgba(127, 90, 240, 0.08) !important;
+}
+
 .data-table tbody tr:last-child td {
   border-bottom: none;
 }

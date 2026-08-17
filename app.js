@@ -689,18 +689,44 @@
         const status = escapeHtml(h.status_compliance)
           ? `<span class="status-badge ${escapeHtml(h.status_compliance)}">${complianceStatusLabel(h.status_compliance)}</span>`
           : '—';
-        const resumo = h.resumo_analise || '';
         return `
-          <tr>
+          <tr class="compliance-history-row" tabindex="0"
+              data-resumo="${escapeAttr(h.resumo_analise || '')}"
+              data-status="${escapeAttr(h.status_compliance || '')}"
+              data-date="${escapeAttr(formatDateTime(h.created_at))}"
+              title="Clique para ver o resumo">
             <td style="white-space:nowrap">${formatDateTime(h.created_at)}</td>
             <td>${status}</td>
-            <td style="max-width:340px;">${escapeHtml(resumo.slice(0, 120))}${resumo.length > 120 ? '…' : ''}</td>
+            <td style="text-align:center; color:var(--text-muted);">👁</td>
           </tr>`;
       }).join('');
     } catch (e) {
       tbody.innerHTML = '';
       if (emptyEl) emptyEl.style.display = '';
     }
+  }
+
+  function openComplianceHistoryDetail(row) {
+    const resumo = row.dataset.resumo || '';
+    const status = row.dataset.status || '';
+    const date = row.dataset.date || '—';
+
+    const meta = $('#complianceDetailMeta');
+    if (meta) {
+      meta.innerHTML = `<span>${escapeHtml(date)}</span>` +
+        (status
+          ? `<span class="status-badge ${escapeHtml(status)}">${complianceStatusLabel(status)}</span>`
+          : '');
+    }
+
+    const body = $('#complianceDetailResumo');
+    if (body) {
+      body.innerHTML = resumo
+        ? renderComplianceResumo(resumo)
+        : '<p style="color:var(--text-muted)">—</p>';
+    }
+
+    openModal('modalComplianceDetail');
   }
 
   // ============================================
@@ -879,6 +905,11 @@
   });
 
   $('#btnToggleComplianceHistory').addEventListener('click', toggleComplianceHistory);
+
+  $('#complianceHistoryBody').addEventListener('click', (e) => {
+    const row = e.target.closest('tr.compliance-history-row');
+    if (row) openComplianceHistoryDetail(row);
+  });
 
   $('#btnResetCompliance').addEventListener('click', async () => {
     const id = Number(document.getElementById('modalCompliance').dataset.requestId);

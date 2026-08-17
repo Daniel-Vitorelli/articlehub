@@ -955,7 +955,7 @@
                 <tr>
                   <th>Data/Hora</th>
                   <th>Status</th>
-                  <th>Resumo</th>
+                  <th style="width:60px;"></th>
                 </tr>
               </thead>
               <tbody id="complianceHistoryBody"></tbody>
@@ -971,6 +971,23 @@
         <button class="btn-primary" id="btnResetCompliance">
           <span>↺</span> Analisar Novamente
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== MODAL: DETALHE DO HISTÓRICO DE ANÁLISE ========== -->
+  <div class="modal-overlay" id="modalComplianceDetail">
+    <div class="modal">
+      <div class="modal-header">
+        <h3>📋 Resumo da Análise</h3>
+        <button class="modal-close" data-close="modalComplianceDetail" aria-label="Fechar">✕</button>
+      </div>
+      <div class="modal-body">
+        <p id="complianceDetailMeta" style="margin:0 0 14px; display:flex; align-items:center; gap:10px; font-size:0.8rem; color:var(--text-muted);"></p>
+        <div id="complianceDetailResumo" style="white-space:pre-wrap;line-height:1.6;"></div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" data-close="modalComplianceDetail">Fechar</button>
       </div>
     </div>
   </div>
