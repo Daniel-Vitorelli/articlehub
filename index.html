@@ -934,29 +934,34 @@
   <div class="modal-overlay" id="modalCompliance">
     <div class="modal">
       <div class="modal-header">
-        <h3>📋 Resumo da Análise Teste 2</h3>
+        <h3>📋 Resumo da Análise</h3>
         <button class="modal-close" data-close="modalCompliance" aria-label="Fechar">✕</button>
       </div>
       <div class="modal-body">
         <p id="complianceResumo" style="white-space:pre-wrap;line-height:1.6;"></p>
-        <hr style="margin:16px 0; border-color: rgba(255,255,255,0.08);">
-        <h4 style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
-          📜 Histórico de Análises
-        </h4>
-        <div style="max-height:200px; overflow-y:auto;">
-          <table class="data-table" style="font-size:0.8rem;">
-            <thead>
-              <tr>
-                <th>Data/Hora</th>
-                <th>Status</th>
-                <th>Resumo</th>
-              </tr>
-            </thead>
-            <tbody id="complianceHistoryBody"></tbody>
-          </table>
-          <p id="complianceHistoryEmpty" style="display:none; text-align:center; padding:1rem; color:var(--text-muted);">
-            Nenhuma análise registrada.
-          </p>
+        <button class="btn-secondary" id="btnToggleComplianceHistory" style="margin-top:12px;width:100%;">
+          📜 Ver Histórico de Análises
+        </button>
+        <div id="complianceHistoryContainer" style="display:none;margin-top:16px;">
+          <hr style="margin:0 0 16px; border-color: rgba(255,255,255,0.08);">
+          <h4 style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
+            📜 Histórico de Análises
+          </h4>
+          <div style="max-height:200px; overflow-y:auto;">
+            <table class="data-table" style="font-size:0.8rem;">
+              <thead>
+                <tr>
+                  <th>Data/Hora</th>
+                  <th>Status</th>
+                  <th>Resumo</th>
+                </tr>
+              </thead>
+              <tbody id="complianceHistoryBody"></tbody>
+            </table>
+            <p id="complianceHistoryEmpty" style="display:none; text-align:center; padding:1rem; color:var(--text-muted);">
+              Nenhuma análise registrada.
+            </p>
+          </div>
         </div>
       </div>
       <div class="modal-footer">

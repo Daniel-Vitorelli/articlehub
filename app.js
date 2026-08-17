@@ -596,19 +596,44 @@
     return value || '—';
   }
 
+  function escapeAttr(str) {
+    return String(str).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+      .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
   function renderComplianceResumo(text) {
-    const parts = text.split(/^(\[[^\]]+\]:)/gm);
-    // parts[0] = texto antes da 1ª seção; depois pares [label, body]
-    if (parts.length <= 1) return escapeHtml(text);
+    const raw = String(text || '').trim();
+    if (!raw) return '';
+
+    // Normaliza CRLF/LF para '\n' (evita cabeçalhos presos no \r)
+    const normalized = raw.replace(/\r\n?/g, '\n');
+
+    // Divide mantendo o cabeçalho capturado; parts[0] = texto antes da 1ª seção
+    const parts = normalized.split(/^(\[[^\]]+\]:)/m);
+    if (parts.length <= 1) {
+      return `<p class="compliance-section-body">${escapeHtml(raw)}</p>`;
+    }
 
     let html = '';
+
+    // Texto introdutório antes da primeira seção (antes era descartado)
+    const intro = (parts[0] || '').trim();
+    if (intro) {
+      html += `<p class="compliance-section-body">${escapeHtml(intro)}</p>`;
+    }
+
     for (let i = 1; i < parts.length; i += 2) {
-      const label = (parts[i].match(/^\[([^\]]+)\]/) || [])[1] || 'Análise';
+      const header = (parts[i] || '').trim();
+      const label = (header.match(/^\[([^\]]+)\]/) || [])[1] || 'Análise';
+      const displayLabel = label.replace(/[_\s]+/g, ' ').trim() || 'Análise';
       const body = (parts[i + 1] || '').trim();
+      const bodyHtml = body
+        ? escapeHtml(body)
+        : '<span style="color:var(--text-muted)">—</span>';
       html += `
-        <div class="compliance-section" data-label="${escapeHtml(label.toLowerCase())}">
-          <span class="compliance-label">${escapeHtml(label.replace(/_/g, ' '))}</span>
-          <p class="compliance-section-body">${escapeHtml(body)}</p>
+        <div class="compliance-section" data-label="${escapeAttr(displayLabel.toLowerCase())}">
+          <span class="compliance-label">${escapeHtml(displayLabel)}</span>
+          <p class="compliance-section-body">${bodyHtml}</p>
         </div>`;
     }
     return html;
@@ -622,9 +647,29 @@
     const hasCompliance = !!r.status_compliance || (r.resumo_analise && String(r.resumo_analise).trim() !== '');
     const btn = $('#btnResetCompliance');
     if (btn) btn.style.display = hasCompliance ? '' : 'none';
+    const histContainer = $('#complianceHistoryContainer');
+    if (histContainer) histContainer.style.display = 'none';
+    const histBtn = $('#btnToggleComplianceHistory');
+    if (histBtn) histBtn.textContent = '📜 Ver Histórico';
     document.getElementById('modalCompliance').dataset.requestId = id;
     openModal('modalCompliance');
-    loadComplianceHistory(id);
+  }
+
+  async function toggleComplianceHistory() {
+    const id = Number(document.getElementById('modalCompliance').dataset.requestId);
+    if (!id) return;
+    const container = $('#complianceHistoryContainer');
+    const btn = $('#btnToggleComplianceHistory');
+    if (!container || !btn) return;
+    const hidden = container.style.display === 'none' || container.style.display === '';
+    if (hidden) {
+      await loadComplianceHistory(id);
+      container.style.display = 'block';
+      btn.textContent = '📜 Ocultar Histórico';
+    } else {
+      container.style.display = 'none';
+      btn.textContent = '📜 Ver Histórico';
+    }
   }
 
   async function loadComplianceHistory(requestId) {
@@ -831,6 +876,8 @@
       btn.textContent = 'Adicionar Pendência';
     }
   });
+
+  $('#btnToggleComplianceHistory').addEventListener('click', toggleComplianceHistory);
 
   $('#btnResetCompliance').addEventListener('click', async () => {
     const id = Number(document.getElementById('modalCompliance').dataset.requestId);
