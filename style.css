@@ -1162,6 +1162,22 @@ select.filter-select option {
   background: var(--accent-danger);
 }
 
+.status-badge.revisar {
+  background: rgba(240, 165, 0, 0.12);
+  color: var(--accent-warning);
+}
+.status-badge.revisar::before {
+  background: var(--accent-warning);
+}
+
+.status-badge.falha {
+  background: rgba(229, 49, 112, 0.18);
+  color: var(--accent-danger);
+}
+.status-badge.falha::before {
+  background: var(--accent-danger);
+}
+
 .compliance-clickable { cursor: pointer; }
 
 /* Resumo da análise (compliance) */

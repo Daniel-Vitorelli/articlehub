@@ -100,7 +100,7 @@ CREATE TABLE requests (
   niche_id           INT UNSIGNED    NULL     COMMENT 'Nicho da solicitação',
   published_url      VARCHAR(500)    NULL     COMMENT 'URL do artigo publicado',
   wp_edit_url        VARCHAR(500)    NULL     COMMENT 'URL de edição do WordPress',
-  status_compliance  VARCHAR(15)     NULL     COMMENT 'Análise de compliance: nao_analisado, aprovado, etc.',
+  status_compliance  VARCHAR(15)     NULL     COMMENT 'Análise de compliance: nao_analisado, aprovado, reprovado, revisar, falha',
   resumo_analise     TEXT            NULL     COMMENT 'Resumo feito pela análise de compliance',
   created_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,

@@ -21,7 +21,7 @@
   let currentMsgTab = 'inbox';
   let pollInterval = null;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.0.1';
+  const APP_VERSION = '1.0.2';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -594,6 +594,8 @@
     if (value === 'aprovado') return 'Aprovado';
     if (value === 'nao_analisado') return 'Não analisado';
     if (value === 'reprovado') return 'Reprovado';
+    if (value === 'revisar') return 'Revisar';
+    if (value === 'falha') return 'Falha';
     return value || '—';
   }
 
