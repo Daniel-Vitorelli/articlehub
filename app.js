@@ -21,6 +21,7 @@
   let currentMsgTab = 'inbox';
   let pollInterval = null;
   const POLL_INTERVAL_MS = 15000;
+  const APP_VERSION = '1.0.0';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -2330,6 +2331,8 @@
   function init() {
     bindEvents();
     initLogin();
+    const verEl = $('#appVersion');
+    if (verEl) verEl.textContent = `v${APP_VERSION}`;
   }
 
   document.addEventListener('DOMContentLoaded', init);

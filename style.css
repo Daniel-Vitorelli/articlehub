@@ -513,6 +513,17 @@ body::before {
   color: var(--text-muted);
 }
 
+.sidebar-version {
+  padding: 10px 20px;
+  border-top: var(--glass-border);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  text-align: center;
+  color: var(--text-muted);
+  opacity: 0.8;
+}
+
 /* ============================================
    MAIN CONTENT
    ============================================ */
