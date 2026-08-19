@@ -20,8 +20,10 @@
   let currentUser = null;
   let currentMsgTab = 'inbox';
   let pollInterval = null;
+  let complianceHistoryProvider = null;
+  let periodicAnalysisGroups = [];
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.2';
+  const APP_VERSION = '1.1.3';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -643,31 +645,37 @@
     return html;
   }
 
-  function openComplianceModal(id) {
+  function openComplianceModal(id, opts = {}) {
     const r = requests.find(x => Number(x.id) === Number(id));
-    if (!r) return;
+    const resumo = opts.resumo !== undefined ? opts.resumo : (r ? r.resumo_analise : '');
+    const status = opts.status !== undefined ? opts.status : (r ? r.status_compliance : '');
     const el = $('#complianceResumo');
-    if (el) el.innerHTML = renderComplianceResumo(r.resumo_analise || '—');
-    const hasCompliance = !!r.status_compliance || (r.resumo_analise && String(r.resumo_analise).trim() !== '');
+    if (el) el.innerHTML = renderComplianceResumo(resumo || '—');
+    const hasCompliance = !!status || (resumo && String(resumo).trim() !== '');
     const btn = $('#btnResetCompliance');
-    if (btn) btn.style.display = hasCompliance ? '' : 'none';
+    if (btn) btn.style.display = (opts.showReset !== false && hasCompliance) ? '' : 'none';
     const histContainer = $('#complianceHistoryContainer');
     if (histContainer) histContainer.style.display = 'none';
     const histBtn = $('#btnToggleComplianceHistory');
     if (histBtn) histBtn.textContent = '📜 Ver Histórico';
-    document.getElementById('modalCompliance').dataset.requestId = id;
+    complianceHistoryProvider = opts.historyRows || null;
+    document.getElementById('modalCompliance').dataset.requestId = id || '';
     openModal('modalCompliance');
   }
 
   async function toggleComplianceHistory() {
-    const id = Number(document.getElementById('modalCompliance').dataset.requestId);
-    if (!id) return;
     const container = $('#complianceHistoryContainer');
     const btn = $('#btnToggleComplianceHistory');
     if (!container || !btn) return;
     const hidden = container.style.display === 'none' || container.style.display === '';
     if (hidden) {
-      await loadComplianceHistory(id);
+      if (complianceHistoryProvider) {
+        renderComplianceHistoryRows(complianceHistoryProvider);
+      } else {
+        const id = Number(document.getElementById('modalCompliance').dataset.requestId);
+        if (!id) return;
+        await loadComplianceHistory(id);
+      }
       container.style.display = 'block';
       btn.textContent = '📜 Ocultar Histórico';
     } else {
@@ -676,37 +684,56 @@
     }
   }
 
-  async function loadComplianceHistory(requestId) {
+  function renderComplianceHistoryRows(rows) {
     const tbody = $('#complianceHistoryBody');
     const emptyEl = $('#complianceHistoryEmpty');
-    if (!tbody) return;
+    if (!tbody || !emptyEl) return;
+    if (!rows || rows.length === 0) {
+      tbody.innerHTML = '';
+      emptyEl.style.display = '';
+      return;
+    }
+    emptyEl.style.display = 'none';
+    tbody.innerHTML = rows.map(h => {
+      const status = escapeHtml(h.status_compliance)
+        ? `<span class="status-badge ${escapeHtml(h.status_compliance)}">${complianceStatusLabel(h.status_compliance)}</span>`
+        : '—';
+      return `
+        <tr class="compliance-history-row" tabindex="0"
+            data-resumo="${escapeAttr(h.resumo_analise || '')}"
+            data-status="${escapeAttr(h.status_compliance || '')}"
+            data-date="${escapeAttr(formatDateTime(h.created_at))}"
+            title="Clique para ver o resumo">
+          <td style="white-space:nowrap">${formatDateTime(h.created_at)}</td>
+          <td>${status}</td>
+          <td style="text-align:center; color:var(--text-muted);">👁</td>
+        </tr>`;
+    }).join('');
+  }
+
+  async function loadComplianceHistory(requestId) {
     try {
       const rows = await apiGet(`compliance.php?request_id=${requestId}`);
-      if (rows.length === 0) {
-        tbody.innerHTML = '';
-        if (emptyEl) emptyEl.style.display = '';
-        return;
-      }
-      if (emptyEl) emptyEl.style.display = 'none';
-      tbody.innerHTML = rows.map(h => {
-        const status = escapeHtml(h.status_compliance)
-          ? `<span class="status-badge ${escapeHtml(h.status_compliance)}">${complianceStatusLabel(h.status_compliance)}</span>`
-          : '—';
-        return `
-          <tr class="compliance-history-row" tabindex="0"
-              data-resumo="${escapeAttr(h.resumo_analise || '')}"
-              data-status="${escapeAttr(h.status_compliance || '')}"
-              data-date="${escapeAttr(formatDateTime(h.created_at))}"
-              title="Clique para ver o resumo">
-            <td style="white-space:nowrap">${formatDateTime(h.created_at)}</td>
-            <td>${status}</td>
-            <td style="text-align:center; color:var(--text-muted);">👁</td>
-          </tr>`;
-      }).join('');
+      renderComplianceHistoryRows(rows);
     } catch (e) {
-      tbody.innerHTML = '';
-      if (emptyEl) emptyEl.style.display = '';
+      renderComplianceHistoryRows([]);
     }
+  }
+
+  function openComplianceModalForPeriodic(key) {
+    const group = periodicAnalysisGroups.find(g => g.key === key);
+    if (!group) return;
+    const latest = group.sorted[0];
+    openComplianceModal(null, {
+      resumo: latest.resumo_analise,
+      status: latest.status_compliance,
+      historyRows: group.sorted.slice(1).map(h => ({
+        created_at: h.created_at,
+        status_compliance: h.status_compliance,
+        resumo_analise: h.resumo_analise,
+      })),
+      showReset: false,
+    });
   }
 
   function openComplianceHistoryDetail(row) {
@@ -915,8 +942,8 @@
   });
 
   $('#periodicAnalysisBody').addEventListener('click', (e) => {
-    const el = e.target.closest('[data-resumo]');
-    if (el) openComplianceHistoryDetail(el);
+    const el = e.target.closest('[data-key]');
+    if (el) openComplianceModalForPeriodic(el.dataset.key);
   });
 
   $('#btnResetCompliance').addEventListener('click', async () => {
@@ -2100,6 +2127,18 @@
     try {
       const rows = await apiGet('periodic_analysis.php');
 
+      // Agrupa por domínio + id_post: a mais recente é a análise atual, o resto é histórico
+      const groups = new Map();
+      rows.forEach(r => {
+        const key = `${r.dominio}::${r.id_post ?? ''}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(r);
+      });
+      periodicAnalysisGroups = [...groups.entries()].map(([key, entries]) => ({
+        key,
+        sorted: [...entries].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
+      }));
+
       const domainSelect = $('#filterPeriodicDomain');
       const currentDomain = domainSelect.value;
       const domainOptions = [...new Set(rows.map(r => r.dominio).filter(Boolean))]
@@ -2109,8 +2148,19 @@
       domainSelect.value = currentDomain;
 
       const statusFilter = $('#filterPeriodicStatus').value;
-      let visible = rows;
+      const typeFilter = $('#filterPeriodicType').value;
+      const typeOptions = [...new Set(rows.map(r => r.post_type).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+      const typeSelect = $('#filterPeriodicType');
+      const currentType = typeSelect.value;
+      const typeLabels = { post: 'Post', page: 'Página' };
+      typeSelect.innerHTML = '<option value="">Todos Tipos</option>' +
+        typeOptions.map(t => `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`).join('');
+      typeSelect.value = currentType;
+
+      let visible = periodicAnalysisGroups.map(g => g.sorted[0]);
       if (statusFilter) visible = visible.filter(r => r.status_compliance === statusFilter);
+      if (typeFilter) visible = visible.filter(r => r.post_type === typeFilter);
       if (domainSelect.value) visible = visible.filter(r => r.dominio === domainSelect.value);
 
       visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
@@ -2124,6 +2174,7 @@
       tbody.innerHTML = visible.map(r => {
         const status = r.status_compliance || '';
         const hasResumo = r.resumo_analise && String(r.resumo_analise).trim() !== '';
+        const key = `${r.dominio}::${r.id_post ?? ''}`;
         const d = domains.find(x => x.blog_name && x.blog_name === r.dominio);
         const domainColor = d ? d.color : '#7f5af0';
         const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type;
@@ -2138,12 +2189,12 @@
             <td>${r.id_post != null ? r.id_post : '—'}</td>
             <td>${typeBadge}</td>
             <td>${status
-              ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-resumo="${escapeAttr(r.resumo_analise)}" data-status="${escapeAttr(status)}" data-date="${escapeAttr(dateStr)}" title="Ver resumo da análise"` : ''}>${complianceStatusLabel(status)}</span>`
+              ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-key="${escapeAttr(key)}" title="Ver resumo e histórico da análise"` : ''}>${complianceStatusLabel(status)}</span>`
               : '—'}</td>
           </tr>`;
       }).join('');
 
-      $('#periodicAnalysisInfo').textContent = `Mostrando ${visible.length} de ${rows.length} análises`;
+      $('#periodicAnalysisInfo').textContent = `Mostrando ${visible.length} de ${periodicAnalysisGroups.length} análises`;
     } catch (e) {
       console.error('Erro ao carregar análises periódicas:', e);
     }
@@ -2353,6 +2404,7 @@
 
     // Periodic analysis filters
     $('#filterPeriodicStatus').addEventListener('change', renderComplianceAnalysis);
+    $('#filterPeriodicType').addEventListener('change', renderComplianceAnalysis);
     $('#filterPeriodicDomain').addEventListener('change', renderComplianceAnalysis);
 
     let searchTimeout;
