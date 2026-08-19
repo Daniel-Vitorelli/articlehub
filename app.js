@@ -21,7 +21,7 @@
   let currentMsgTab = 'inbox';
   let pollInterval = null;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.1';
+  const APP_VERSION = '1.1.2';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -2124,7 +2124,7 @@
       tbody.innerHTML = visible.map(r => {
         const status = r.status_compliance || '';
         const hasResumo = r.resumo_analise && String(r.resumo_analise).trim() !== '';
-        const d = domains.find(x => x.url && x.url.includes(r.dominio));
+        const d = domains.find(x => x.blog_name && x.blog_name === r.dominio);
         const domainColor = d ? d.color : '#7f5af0';
         const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type;
         const typeBadge = typeLabel
