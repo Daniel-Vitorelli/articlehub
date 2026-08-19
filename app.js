@@ -21,7 +21,7 @@
   let currentMsgTab = 'inbox';
   let pollInterval = null;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.0.2';
+  const APP_VERSION = '1.1.0';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -329,7 +329,7 @@
   //  NAVIGATION
   // ============================================
   function navigateTo(viewName, options) {
-    if ((viewName === 'users' || viewName === 'domains' || viewName === 'languages' || viewName === 'niches') && !is('admin')) {
+    if ((viewName === 'users' || viewName === 'domains' || viewName === 'languages' || viewName === 'niches' || viewName === 'compliance-analysis') && !is('admin')) {
       viewName = 'dashboard';
     }
 
@@ -346,7 +346,7 @@
     const activeLink = $(`.nav-link[data-view="${viewName}"]`);
     if (activeLink) activeLink.classList.add('active');
 
-    const titles = { dashboard: 'Dashboard', requests: 'Solicitações', users: 'Usuários', domains: 'Domínios / Blogs', languages: 'Idiomas', niches: 'Nichos', messages: 'Mensagens', logs: 'Logs de Status' };
+    const titles = { dashboard: 'Dashboard', requests: 'Solicitações', users: 'Usuários', domains: 'Domínios / Blogs', languages: 'Idiomas', niches: 'Nichos', messages: 'Mensagens', logs: 'Logs de Status', 'compliance-analysis': 'Análise Periódica de Compliance' };
     $('#pageTitle').textContent = titles[viewName] || 'Dashboard';
 
     if (viewName === 'dashboard') renderDashboard();
@@ -358,10 +358,11 @@
     if (viewName === 'messages') renderMessages();
     if (viewName === 'logs') renderLogs();
     if (viewName === 'trash') renderTrash();
+    if (viewName === 'compliance-analysis') renderComplianceAnalysis();
   }
 
   function capitalize(str) {
-    return str.charAt(0).toUpperCase() + str.slice(1);
+    return str.replace(/(^|-)(\w)/g, (_, sep, ch) => ch.toUpperCase());
   }
 
   // ============================================
@@ -2085,6 +2086,12 @@
     }
   }
 
+  // ============================================
+  //  COMPLIANCE ANALYSIS VIEW (ADMIN)
+  // ============================================
+  function renderComplianceAnalysis() {
+  }
+
   async function renderMessages() {
     const listEl = $('#msgListBody');
     try {
@@ -2219,6 +2226,7 @@
     if (view === 'users') renderUsers();
     if (view === 'domains') renderDomains();
     if (view === 'messages') renderMessages();
+    if (view === 'compliance-analysis') renderComplianceAnalysis();
   }
 
   // ============================================
