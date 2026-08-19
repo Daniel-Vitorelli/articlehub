@@ -21,7 +21,7 @@
   let currentMsgTab = 'inbox';
   let pollInterval = null;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.0';
+  const APP_VERSION = '1.1.1';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -2124,14 +2124,19 @@
       tbody.innerHTML = visible.map(r => {
         const status = r.status_compliance || '';
         const hasResumo = r.resumo_analise && String(r.resumo_analise).trim() !== '';
-        const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type || '—';
+        const d = domains.find(x => x.url && x.url.includes(r.dominio));
+        const domainColor = d ? d.color : '#7f5af0';
+        const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type;
+        const typeBadge = typeLabel
+          ? `<span class="type-badge ${escapeHtml(r.post_type)}">${escapeHtml(typeLabel)}</span>`
+          : '—';
         const dateStr = formatDateTime(r.created_at);
         return `
           <tr>
             <td style="white-space:nowrap">${dateStr}</td>
-            <td>${escapeHtml(r.dominio)}</td>
+            <td><div class="blog-name"><span class="blog-dot" style="background:${domainColor}"></span>${escapeHtml(r.dominio)}</div></td>
             <td>${r.id_post != null ? r.id_post : '—'}</td>
-            <td>${escapeHtml(typeLabel)}</td>
+            <td>${typeBadge}</td>
             <td>${status
               ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-resumo="${escapeAttr(r.resumo_analise)}" data-status="${escapeAttr(status)}" data-date="${escapeAttr(dateStr)}" title="Ver resumo da análise"` : ''}>${complianceStatusLabel(status)}</span>`
               : '—'}</td>

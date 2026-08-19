@@ -1668,6 +1668,25 @@ select.filter-select option {
   color: var(--accent-warning);
 }
 
+/* Type indicator (post/page) */
+.type-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.type-badge.post {
+  background: rgba(57, 160, 237, 0.12);
+  color: var(--accent-info);
+}
+
+.type-badge.page {
+  background: rgba(127, 90, 240, 0.12);
+  color: var(--accent-primary);
+}
+
 /* Published Status Badge */
 .status-badge.published {
   background: rgba(0, 210, 190, 0.12);
