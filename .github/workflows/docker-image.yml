@@ -27,6 +27,7 @@ jobs:
           context: .
           push: true
           tags: ghcr.io/daniel-vitorelli/articlehub:latest
+          no-cache: true
 
       - name: Avisar o Portainer
         run: curl -X POST ${{ secrets.PORTAINER_WEBHOOK }}
