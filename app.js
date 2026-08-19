@@ -914,6 +914,11 @@
     if (row) openComplianceHistoryDetail(row);
   });
 
+  $('#periodicAnalysisBody').addEventListener('click', (e) => {
+    const el = e.target.closest('[data-resumo]');
+    if (el) openComplianceHistoryDetail(el);
+  });
+
   $('#btnResetCompliance').addEventListener('click', async () => {
     const id = Number(document.getElementById('modalCompliance').dataset.requestId);
     if (!id) return;
@@ -2089,7 +2094,54 @@
   // ============================================
   //  COMPLIANCE ANALYSIS VIEW (ADMIN)
   // ============================================
-  function renderComplianceAnalysis() {
+  async function renderComplianceAnalysis() {
+    const tbody = $('#periodicAnalysisBody');
+    if (!tbody) return;
+    try {
+      const rows = await apiGet('periodic_analysis.php');
+
+      const domainSelect = $('#filterPeriodicDomain');
+      const currentDomain = domainSelect.value;
+      const domainOptions = [...new Set(rows.map(r => r.dominio).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b));
+      domainSelect.innerHTML = '<option value="">Todos Domínios</option>' +
+        domainOptions.map(d => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join('');
+      domainSelect.value = currentDomain;
+
+      const statusFilter = $('#filterPeriodicStatus').value;
+      let visible = rows;
+      if (statusFilter) visible = visible.filter(r => r.status_compliance === statusFilter);
+      if (domainSelect.value) visible = visible.filter(r => r.dominio === domainSelect.value);
+
+      visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+      if (!visible.length) {
+        tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+        $('#periodicAnalysisInfo').textContent = 'Nenhuma análise';
+        return;
+      }
+
+      tbody.innerHTML = visible.map(r => {
+        const status = r.status_compliance || '';
+        const hasResumo = r.resumo_analise && String(r.resumo_analise).trim() !== '';
+        const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type || '—';
+        const dateStr = formatDateTime(r.created_at);
+        return `
+          <tr>
+            <td style="white-space:nowrap">${dateStr}</td>
+            <td>${escapeHtml(r.dominio)}</td>
+            <td>${r.id_post != null ? r.id_post : '—'}</td>
+            <td>${escapeHtml(typeLabel)}</td>
+            <td>${status
+              ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-resumo="${escapeAttr(r.resumo_analise)}" data-status="${escapeAttr(status)}" data-date="${escapeAttr(dateStr)}" title="Ver resumo da análise"` : ''}>${complianceStatusLabel(status)}</span>`
+              : '—'}</td>
+          </tr>`;
+      }).join('');
+
+      $('#periodicAnalysisInfo').textContent = `Mostrando ${visible.length} de ${rows.length} análises`;
+    } catch (e) {
+      console.error('Erro ao carregar análises periódicas:', e);
+    }
   }
 
   async function renderMessages() {
@@ -2293,6 +2345,10 @@
     // Log filters
     $('#filterLogDate').addEventListener('change', renderLogs);
     $('#filterLogUser').addEventListener('change', renderLogs);
+
+    // Periodic analysis filters
+    $('#filterPeriodicStatus').addEventListener('change', renderComplianceAnalysis);
+    $('#filterPeriodicDomain').addEventListener('change', renderComplianceAnalysis);
 
     let searchTimeout;
     $('#globalSearch').addEventListener('input', () => {

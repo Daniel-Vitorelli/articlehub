@@ -34,17 +34,17 @@ CREATE TABLE users (
 -- TABELA: domains
 -- Blogs / domínios cadastrados
 -- ============================================
-CREATE TABLE domains (
-  id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
-  blog_name   VARCHAR(150)    NOT NULL,
-  url         VARCHAR(500)    NOT NULL,
-  niche       VARCHAR(100)    NOT NULL,
-  color       VARCHAR(7)      NOT NULL DEFAULT '#7f5af0' COMMENT 'Cor hexadecimal',
-  active      TINYINT(1)      NOT NULL DEFAULT 1,
-  created_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-  INDEX idx_domains_active (active)
+CREATE TABLE `domains` (
+  `id` int UNSIGNED NOT NULL,
+  `blog_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `niche` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `color` varchar(7) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '#7f5af0' COMMENT 'Cor hexadecimal',
+  `language` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `bloco_anuncio` text COLLATE utf8mb4_unicode_ci NOT NULL,
+  `active` tinyint(1) NOT NULL DEFAULT '1',
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -366,4 +366,21 @@ CREATE TABLE compliance_history (
         FOREIGN KEY (request_id) REFERENCES requests(id)
         ON DELETE RESTRICT
         ON UPDATE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `periodic_analysis` (
+  `id` int UNSIGNED NOT NULL,
+  `id_post` int DEFAULT NULL,
+  `post_type` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `status_compliance` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `resumo_analise` text COLLATE utf8mb4_unicode_ci NOT NULL,
+  `dominio` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE `periodic_analysis_status` (
+  `id` int UNSIGNED NOT NULL,
+  `dominio` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `start_in` timestamp NOT NULL,
+  `finished_in` timestamp NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
