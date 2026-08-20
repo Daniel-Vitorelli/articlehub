@@ -1766,6 +1766,20 @@ select.filter-select option {
   transform: translateY(-1px);
 }
 
+.scroll-sentinel td {
+  padding: 14px;
+  text-align: center;
+}
+
+.scroll-sentinel-inner {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
 /* Published Status Step Focus */
 .status-step.published-step.current {
   background: rgba(0, 210, 190, 0.2);

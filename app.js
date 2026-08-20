@@ -22,8 +22,12 @@
   let pollInterval = null;
   let complianceHistoryProvider = null;
   let periodicAnalysisGroups = [];
+  let periodicAnalysisVisible = [];
+  let periodicAnalysisLoaded = 0;
+  let periodicSentinelObserver = null;
+  const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.7';
+  const APP_VERSION = '1.1.8';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -2144,6 +2148,68 @@
   // ============================================
   //  COMPLIANCE ANALYSIS VIEW (ADMIN)
   // ============================================
+  function periodicRowHtml(r) {
+    const status = r.status_compliance || '';
+    const hasResumo = r.resumo_analise && String(r.resumo_analise).trim() !== '';
+    const key = `${r.dominio}::${r.id_post ?? ''}`;
+    const d = domains.find(x => x.blog_name && x.blog_name === r.dominio);
+    const domainColor = d ? d.color : '#7f5af0';
+    const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type;
+    const typeBadge = typeLabel
+      ? `<span class="type-badge ${escapeHtml(r.post_type)}">${escapeHtml(typeLabel)}</span>`
+      : '—';
+    const dateStr = formatDateTime(r.created_at);
+    return `
+      <tr>
+        <td style="white-space:nowrap">${dateStr}</td>
+        <td><div class="blog-name"><span class="blog-dot" style="background:${domainColor}"></span>${escapeHtml(r.dominio)}</div></td>
+        <td>${r.id_post != null ? r.id_post : '—'}</td>
+        <td>${typeBadge}</td>
+        <td>${status
+          ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-key="${escapeAttr(key)}" title="Ver resumo e histórico da análise"` : ''}>${complianceStatusLabel(status)}</span>`
+          : '—'}</td>
+        <td>${publishStatusBadge(r.publish_status)}</td>
+        <td>${periodicPostLink(r.dominio_url, r.id_post, true)}</td>
+        <td>${periodicPostLink(r.dominio_url, r.id_post, false)}</td>
+      </tr>`;
+  }
+
+  function periodicSentinelRow() {
+    return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
+  }
+
+  function renderPeriodicChunk() {
+    const tbody = $('#periodicAnalysisBody');
+    if (!tbody || periodicAnalysisLoaded >= periodicAnalysisVisible.length) {
+      if (periodicSentinelObserver) {
+        periodicSentinelObserver.disconnect();
+        periodicSentinelObserver = null;
+      }
+      const sentinel = document.getElementById('periodicScrollSentinel');
+      if (sentinel) sentinel.remove();
+      return;
+    }
+    const sentinel = document.getElementById('periodicScrollSentinel');
+    if (sentinel) sentinel.remove();
+
+    const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
+    const holder = document.createElement('tbody');
+    holder.innerHTML = chunk.map(periodicRowHtml).join('');
+    while (holder.firstChild) tbody.appendChild(holder.firstChild);
+    periodicAnalysisLoaded += chunk.length;
+
+    $('#periodicAnalysisInfo').textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
+
+    if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
+      tbody.insertAdjacentHTML('beforeend', periodicSentinelRow());
+      if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+      periodicSentinelObserver = new IntersectionObserver((entries) => {
+        if (entries.some(e => e.isIntersecting)) renderPeriodicChunk();
+      }, { rootMargin: '300px' });
+      periodicSentinelObserver.observe(document.getElementById('periodicScrollSentinel'));
+    }
+  }
+
   async function renderComplianceAnalysis() {
     const tbody = $('#periodicAnalysisBody');
     if (!tbody) return;
@@ -2188,39 +2254,21 @@
 
       visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
+      periodicAnalysisVisible = visible;
+      periodicAnalysisLoaded = 0;
+
       if (!visible.length) {
+        if (periodicSentinelObserver) {
+          periodicSentinelObserver.disconnect();
+          periodicSentinelObserver = null;
+        }
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $('#periodicAnalysisInfo').textContent = 'Nenhuma análise';
         return;
       }
 
-      tbody.innerHTML = visible.map(r => {
-        const status = r.status_compliance || '';
-        const hasResumo = r.resumo_analise && String(r.resumo_analise).trim() !== '';
-        const key = `${r.dominio}::${r.id_post ?? ''}`;
-        const d = domains.find(x => x.blog_name && x.blog_name === r.dominio);
-        const domainColor = d ? d.color : '#7f5af0';
-        const typeLabel = { post: 'Post', page: 'Página' }[r.post_type] || r.post_type;
-        const typeBadge = typeLabel
-          ? `<span class="type-badge ${escapeHtml(r.post_type)}">${escapeHtml(typeLabel)}</span>`
-          : '—';
-        const dateStr = formatDateTime(r.created_at);
-        return `
-          <tr>
-            <td style="white-space:nowrap">${dateStr}</td>
-            <td><div class="blog-name"><span class="blog-dot" style="background:${domainColor}"></span>${escapeHtml(r.dominio)}</div></td>
-            <td>${r.id_post != null ? r.id_post : '—'}</td>
-            <td>${typeBadge}</td>
-            <td>${status
-              ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-key="${escapeAttr(key)}" title="Ver resumo e histórico da análise"` : ''}>${complianceStatusLabel(status)}</span>`
-              : '—'}</td>
-            <td>${publishStatusBadge(r.publish_status)}</td>
-            <td>${periodicPostLink(r.dominio_url, r.id_post, true)}</td>
-            <td>${periodicPostLink(r.dominio_url, r.id_post, false)}</td>
-          </tr>`;
-      }).join('');
-
-      $('#periodicAnalysisInfo').textContent = `Mostrando ${visible.length} de ${periodicAnalysisGroups.length} análises`;
+      tbody.innerHTML = '';
+      renderPeriodicChunk();
     } catch (e) {
       console.error('Erro ao carregar análises periódicas:', e);
     }
