@@ -23,7 +23,7 @@
   let complianceHistoryProvider = null;
   let periodicAnalysisGroups = [];
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.5';
+  const APP_VERSION = '1.1.6';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -604,7 +604,24 @@
 
   function publishStatusBadge(value) {
     if (!value) return '—';
-    return `<span class="status-badge ${escapeHtml(value)}">${escapeHtml(statusLabel(value))}</span>`;
+    const labels = {
+      publish: 'Publicado',
+      draft: 'Rascunho',
+      'auto-draft': 'Rascunho automático',
+      inherit: 'Herança',
+    };
+    return `<span class="status-badge ${escapeHtml(value)}">${escapeHtml(labels[value] || value)}</span>`;
+  }
+
+  function periodicPostLink(domainUrl, postId, published) {
+    if (!domainUrl || postId == null) return '—';
+    const base = String(domainUrl).replace(/\/+$/, '');
+    const href = published
+      ? `${base}?p=${postId}`
+      : `${base}/wp-admin/post.php?post=${postId}&action=edit`;
+    const label = published ? 'Ver publicado' : 'Editar';
+    const icon = published ? '🔗' : '📝';
+    return `<a href="${escapeAttr(href)}" target="_blank" class="table-link">${icon} ${label}</a>`;
   }
 
   function escapeAttr(str) {
@@ -2171,7 +2188,7 @@
       visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
       if (!visible.length) {
-        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $('#periodicAnalysisInfo').textContent = 'Nenhuma análise';
         return;
       }
@@ -2197,6 +2214,8 @@
               ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-key="${escapeAttr(key)}" title="Ver resumo e histórico da análise"` : ''}>${complianceStatusLabel(status)}</span>`
               : '—'}</td>
             <td>${publishStatusBadge(r.publish_status)}</td>
+            <td>${periodicPostLink(r.dominio_url, r.id_post, true)}</td>
+            <td>${periodicPostLink(r.dominio_url, r.id_post, false)}</td>
           </tr>`;
       }).join('');
 

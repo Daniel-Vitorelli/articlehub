@@ -11,5 +11,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 requireRole('admin');
 
 $db = getDB();
-$stmt = $db->query('SELECT * FROM periodic_analysis ORDER BY created_at DESC, id DESC');
+$stmt = $db->query(
+    'SELECT pa.*, d.url AS dominio_url
+     FROM periodic_analysis pa
+     LEFT JOIN domains d ON d.blog_name = pa.dominio
+     ORDER BY pa.created_at DESC, pa.id DESC'
+);
 jsonResponse(200, $stmt->fetchAll());

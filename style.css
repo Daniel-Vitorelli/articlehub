@@ -1697,13 +1697,55 @@ select.filter-select option {
   background: #00d2be;
 }
 
-.status-badge.deleted {
-  background: rgba(255, 84, 110, 0.12);
-  color: #ff546e;
+.status-badge.publish {
+  background: rgba(0, 210, 190, 0.12);
+  color: #00d2be;
 }
 
-.status-badge.deleted::before {
-  background: #ff546e;
+.status-badge.publish::before {
+  background: #00d2be;
+}
+
+.status-badge.draft {
+  background: rgba(255, 159, 67, 0.12);
+  color: #ff9f43;
+}
+
+.status-badge.draft::before {
+  background: #ff9f43;
+}
+
+.status-badge.auto-draft {
+  background: rgba(149, 157, 165, 0.12);
+  color: #95a6a5;
+}
+
+.status-badge.auto-draft::before {
+  background: #95a6a5;
+}
+
+.status-badge.inherit {
+  background: rgba(57, 160, 237, 0.12);
+  color: #39a0ed;
+}
+
+.status-badge.inherit::before {
+  background: #39a0ed;
+}
+
+.table-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent-info);
+  text-decoration: none;
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.table-link:hover {
+  text-decoration: underline;
 }
 
 /* Published Status Step Focus */
