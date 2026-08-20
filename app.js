@@ -23,7 +23,7 @@
   let complianceHistoryProvider = null;
   let periodicAnalysisGroups = [];
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.3';
+  const APP_VERSION = '1.1.4';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -600,6 +600,20 @@
     if (value === 'revisar') return 'Revisar';
     if (value === 'falha') return 'Falha';
     return value || '—';
+  }
+
+  function publishStatusBadge(value) {
+    if (!value) return '—';
+    const labels = {
+      pending: 'Pendente',
+      'in-progress': 'Em Produção',
+      review: 'Em Revisão',
+      done: 'Concluído',
+      published: 'Publicado',
+      revisado: 'Revisado',
+      deleted: 'Deletado',
+    };
+    return `<span class="status-badge ${escapeHtml(value)}">${escapeHtml(labels[value] || value)}</span>`;
   }
 
   function escapeAttr(str) {
@@ -2166,7 +2180,7 @@
       visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
       if (!visible.length) {
-        tbody.innerHTML = `<tr><td colspan="5"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $('#periodicAnalysisInfo').textContent = 'Nenhuma análise';
         return;
       }
@@ -2191,6 +2205,7 @@
             <td>${status
               ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? ' compliance-clickable' : ''}" ${hasResumo ? `data-key="${escapeAttr(key)}" title="Ver resumo e histórico da análise"` : ''}>${complianceStatusLabel(status)}</span>`
               : '—'}</td>
+            <td>${publishStatusBadge(r.publish_status)}</td>
           </tr>`;
       }).join('');
 

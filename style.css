@@ -1697,6 +1697,15 @@ select.filter-select option {
   background: #00d2be;
 }
 
+.status-badge.deleted {
+  background: rgba(255, 84, 110, 0.12);
+  color: #ff546e;
+}
+
+.status-badge.deleted::before {
+  background: #ff546e;
+}
+
 /* Published Status Step Focus */
 .status-step.published-step.current {
   background: rgba(0, 210, 190, 0.2);
