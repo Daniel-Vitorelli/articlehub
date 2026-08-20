@@ -1736,16 +1736,34 @@ select.filter-select option {
 .table-link {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  color: var(--accent-info);
-  text-decoration: none;
-  font-size: 0.78rem;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.75rem;
   font-weight: 600;
+  text-decoration: none;
   white-space: nowrap;
+  transition: background 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-.table-link:hover {
-  text-decoration: underline;
+.table-link.published {
+  background: rgba(0, 210, 190, 0.12);
+  color: #00d2be;
+}
+
+.table-link.published:hover {
+  background: rgba(0, 210, 190, 0.22);
+  transform: translateY(-1px);
+}
+
+.table-link.edit {
+  background: rgba(57, 160, 237, 0.12);
+  color: var(--accent-info);
+}
+
+.table-link.edit:hover {
+  background: rgba(57, 160, 237, 0.22);
+  transform: translateY(-1px);
 }
 
 /* Published Status Step Focus */

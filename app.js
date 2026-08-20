@@ -23,7 +23,7 @@
   let complianceHistoryProvider = null;
   let periodicAnalysisGroups = [];
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.6';
+  const APP_VERSION = '1.1.7';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -621,7 +621,8 @@
       : `${base}/wp-admin/post.php?post=${postId}&action=edit`;
     const label = published ? 'Ver publicado' : 'Editar';
     const icon = published ? '🔗' : '📝';
-    return `<a href="${escapeAttr(href)}" target="_blank" class="table-link">${icon} ${label}</a>`;
+    const variant = published ? 'published' : 'edit';
+    return `<a href="${escapeAttr(href)}" target="_blank" class="table-link ${variant}">${icon} ${label}</a>`;
   }
 
   function escapeAttr(str) {
