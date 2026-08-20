@@ -23,7 +23,7 @@
   let complianceHistoryProvider = null;
   let periodicAnalysisGroups = [];
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = '1.1.4';
+  const APP_VERSION = '1.1.5';
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -604,16 +604,7 @@
 
   function publishStatusBadge(value) {
     if (!value) return '—';
-    const labels = {
-      pending: 'Pendente',
-      'in-progress': 'Em Produção',
-      review: 'Em Revisão',
-      done: 'Concluído',
-      published: 'Publicado',
-      revisado: 'Revisado',
-      deleted: 'Deletado',
-    };
-    return `<span class="status-badge ${escapeHtml(value)}">${escapeHtml(labels[value] || value)}</span>`;
+    return `<span class="status-badge ${escapeHtml(value)}">${escapeHtml(statusLabel(value))}</span>`;
   }
 
   function escapeAttr(str) {
