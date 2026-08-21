@@ -27,7 +27,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.1.10";
+  const APP_VERSION = "1.1.11";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);

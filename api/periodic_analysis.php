@@ -51,7 +51,7 @@ if ($method === 'POST') {
                 $input['id_post'],
                 $input['post_type'],
                 'nao_analisado',
-                null,
+                'esperanndo re-analise',
                 $input['dominio'],
                 $createdAt,
                 $publishStatus
@@ -66,7 +66,7 @@ if ($method === 'POST') {
                 $input['id_post'],
                 $input['post_type'],
                 'nao_analisado',
-                '',
+                'esperanndo re-analise',
                 $input['dominio'],
                 $createdAt
             ]);
