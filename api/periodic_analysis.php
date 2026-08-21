@@ -66,7 +66,7 @@ if ($method === 'POST') {
                 $input['id_post'],
                 $input['post_type'],
                 'nao_analisado',
-                null,
+                '',
                 $input['dominio'],
                 $createdAt
             ]);
