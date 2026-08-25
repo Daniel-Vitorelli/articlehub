@@ -27,7 +27,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.1.11";
+  const APP_VERSION = "1.1.12";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -837,7 +837,11 @@
     const histBtn = $("#btnToggleComplianceHistory");
     if (histBtn) histBtn.textContent = "📜 Ver Histórico";
     complianceHistoryProvider = opts.historyRows || null;
-    document.getElementById("modalCompliance").dataset.requestId = id || "";
+    const modalEl = document.getElementById("modalCompliance");
+    modalEl.dataset.requestId = id || "";
+    // Limpa contexto periódico: garante que modais de requests nunca
+    // sejam roteados para a lógica de análise periódica
+    modalEl.dataset.periodicKey = "";
     openModal("modalCompliance");
   }
 
@@ -908,12 +912,6 @@
     if (!group) return;
     const latest = group.sorted[0];
 
-    // Guardar a key no modal para o handler saber qual item está aberto
-    const modal = $("#modalCompliance");
-    modal.dataset.periodicKey = key;
-    // Limpar requestId para não conflitar com lógica de requests
-    modal.dataset.requestId = "";
-
     openComplianceModal(null, {
       resumo: latest.resumo_analise,
       status: latest.status_compliance,
@@ -925,24 +923,24 @@
       showReset: true, // Mostrar o botão
     });
 
-    // IMPORTANTE: Trocar o handler do botão após o modal abrir
-    // Usar setTimeout para garantir que o modal já foi renderizado
-    setTimeout(() => {
-      const btn = $("#btnResetCompliance");
-      if (btn) {
-        // Remover handlers antigos clonando o elemento
-        const newBtn = btn.cloneNode(true);
-        btn.parentNode.replaceChild(newBtn, btn);
+    // IMPORTANTE: definir DEPOIS de openComplianceModal, pois ele limpa
+    // periodicKey por padrão (proteção para modais de requests)
+    const modal = $("#modalCompliance");
+    modal.dataset.periodicKey = key;
+    modal.dataset.requestId = "";
 
-        // Adicionar novo handler para análise periódica
-        newBtn.addEventListener("click", handlePeriodicReanalyze);
-      }
-    }, 0);
+    // O clique é roteado pelo handler GLOBAL de #btnResetCompliance,
+    // que despacha para handlePeriodicReanalyze quando periodicKey existe.
+    // Sem cloneNode/troca de handlers = impossível corromper o estado do botão.
   }
+
+  // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
+  const RESET_BTN_DEFAULT_HTML = "<span>↺</span> Analisar Novamente";
+  const RESET_BTN_LOADING_HTML = '<span class="spinner"></span> Criando...';
 
   async function handlePeriodicReanalyze() {
     const modal = $("#modalCompliance");
-    const key = modal.dataset.periodicKey;
+    const key = modal?.dataset?.periodicKey;
     if (!key) return;
 
     // Encontrar o grupo da análise periódica
@@ -961,30 +959,45 @@
       publish_status: latest.publish_status || "draft", // fallback se não tiver
     };
 
-    // Mostrar loading no botão
+    // Mostrar loading no botão (com guarda de existência)
     const btn = $("#btnResetCompliance");
-    const originalText = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = '<span class="spinner"></span> Criando...';
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = RESET_BTN_LOADING_HTML;
+    }
 
     try {
       const res = await apiPost("periodic_analysis.php", payload);
 
-      if (res.success) {
-        // Fechar modal
+      if (!res || !res.success) {
+        throw new Error(res?.message || "Resposta inesperada do servidor.");
+      }
+
+      console.log("Nova análise periódica criada:", res.id);
+
+      // Só fecha o modal se ainda estiver mostrando ESTE item
+      if (modal.dataset.periodicKey === key) {
         closeModal("modalCompliance");
-
-        // Recarregar a lista de análises periódicas
-        await renderComplianceAnalysis();
-
-        // Opcional: toast de sucesso
-        console.log("Nova análise periódica criada:", res.id);
       }
     } catch (err) {
-      alert("Erro ao criar nova análise: " + err.message);
+      alert(
+        "Erro ao criar nova análise: " +
+          (err?.message || "erro desconhecido"),
+      );
     } finally {
-      btn.disabled = false;
-      btn.innerHTML = originalText;
+      // Sempre restaura com HTML FIXO — nunca depende do estado anterior
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = RESET_BTN_DEFAULT_HTML;
+      }
+    }
+
+    // Recarrega a lista fora do try/catch principal: falha aqui não deve
+    // disparar alert de erro da reanálise (o registro já foi criado).
+    try {
+      await renderComplianceAnalysis();
+    } catch (e) {
+      console.error("Falha ao recarregar análises periódicas:", e);
     }
   }
 
@@ -1228,12 +1241,19 @@
   $("#btnResetCompliance").addEventListener("click", async () => {
     const modal = document.getElementById("modalCompliance");
 
-    // Se veio de análise periódica, NÃO executa lógica de requests
-    // (o handler específico foi anexado em openComplianceModalForPeriodic)
+    // Roteia para a lógica da análise periódica quando aplicável
     if (modal.dataset.periodicKey) {
+      try {
+        await handlePeriodicReanalyze();
+      } catch (e) {
+        // handlePeriodicReanalyze já trata os próprios erros internamente;
+        // este catch é uma rede de segurança extra
+        console.error("Erro inesperado na reanálise periódica:", e);
+      }
       return;
     }
 
+    // Lógica original para requests
     const id = Number(modal.dataset.requestId);
     if (!id) return;
     try {
