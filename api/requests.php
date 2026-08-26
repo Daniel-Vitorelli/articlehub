@@ -101,6 +101,9 @@ switch ($method) {
         elseif ($action === 'reset_compliance') {
             resetCompliance();
         }
+        elseif ($action === 'clear_image') {
+            clearImage();
+        }
         else {
             updateRequest();
         }
@@ -490,8 +493,8 @@ function publishRequest(): void
         }
     }
 
-    // Update
-    $stmt = $db->prepare('UPDATE requests SET status = "published", published_url = ? WHERE id = ?');
+    // Update - ao publicar limpa imagem e nome (libera espaço)
+    $stmt = $db->prepare('UPDATE requests SET status = "published", published_url = ?, imagem = NULL, imagem_nome = NULL WHERE id = ?');
     $stmt->execute([$url, $id]);
 
     // History
@@ -663,6 +666,50 @@ function getRequestImage(): void
     if ($filename !== null) $filename = trim($filename);
 
     jsonResponse(200, ['image' => $b64, 'mime' => $mime, 'filename' => $filename]);
+}
+
+// --- Clear Image (excluir imagem sem publicar) ---
+function clearImage(): void
+{
+    $user = requireAuth();
+    $input = getInput();
+    $id = (int)($input['id'] ?? 0);
+    if (!$id) {
+        jsonResponse(400, ['error' => 'ID é obrigatório.']);
+    }
+
+    $db = getDB();
+    $stmt = $db->prepare('SELECT imagem, imagem_nome, requested_by_id, writer_id FROM requests WHERE id = ?');
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) {
+        jsonResponse(404, ['error' => 'Solicitação não encontrada.']);
+    }
+
+    // Permissão espelha getRequestImage / updateRequest
+    $canClear = false;
+    if (in_array($user['role'], ['admin', 'revisor', 'redator'])) {
+        $canClear = true;
+    } elseif ((int)$r['requested_by_id'] === (int)$user['id'] || (int)$r['writer_id'] === (int)$user['id']) {
+        $canClear = true;
+    }
+    if (!$canClear) {
+        jsonResponse(403, ['error' => 'Sem permissão para excluir a imagem desta solicitação.']);
+    }
+
+    if ($r['imagem'] === null && $r['imagem_nome'] === null) {
+        jsonResponse(200, ['message' => 'Já sem imagem.']);
+    }
+
+    $stmt = $db->prepare('UPDATE requests SET imagem = NULL, imagem_nome = NULL WHERE id = ?');
+    $stmt->execute([$id]);
+
+    // Log no histórico
+    $changes = json_encode([['field' => 'imagem', 'from' => $r['imagem_nome'] ?: 'com imagem', 'to' => null]], JSON_UNESCAPED_UNICODE);
+    $stmt = $db->prepare('INSERT INTO request_history (request_id, user_id, action, changes) VALUES (?, ?, "edit", ?)');
+    $stmt->execute([$id, $user['id'], $changes]);
+
+    jsonResponse(200, ['message' => 'Imagem excluída.']);
 }
 
 // Reset Compliance

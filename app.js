@@ -757,6 +757,7 @@
     const infoEl = $("#imageInfo");
     const idEl = $("#imageModalId");
     const dlBtn = $("#btnDownloadImage");
+    const delBtn = $("#btnDeleteImage");
     // Reset estado
     currentImageData = null;
     if (img) {
@@ -774,6 +775,11 @@
       dlBtn.disabled = true;
       dlBtn.style.opacity = "0.5";
       dlBtn.style.pointerEvents = "none";
+    }
+    if (delBtn) {
+      delBtn.disabled = true;
+      delBtn.style.opacity = "0.5";
+      delBtn.style.pointerEvents = "none";
     }
     openModal("modalImage");
     try {
@@ -802,6 +808,12 @@
         dlBtn.style.opacity = "1";
         dlBtn.style.pointerEvents = "auto";
       }
+      const delBtn2 = $("#btnDeleteImage");
+      if (delBtn2) {
+        delBtn2.disabled = false;
+        delBtn2.style.opacity = "1";
+        delBtn2.style.pointerEvents = "auto";
+      }
     } catch (e) {
       if (loader) loader.style.display = "none";
       if (errEl) {
@@ -810,6 +822,44 @@
       }
       if (infoEl) infoEl.textContent = "Erro ao carregar";
       currentImageData = null;
+    }
+  }
+
+  async function deleteCurrentImage() {
+    if (!currentImageData || !currentImageData.id) return;
+    if (!confirm("Excluir a imagem desta solicitação? Esta ação não pode ser desfeita.")) return;
+    const delBtn = $("#btnDeleteImage");
+    const originalText = delBtn ? delBtn.innerHTML : "";
+    if (delBtn) {
+      delBtn.disabled = true;
+      delBtn.innerHTML = '<span class="spinner" style="width:14px;height:14px;border-width:2px;"></span> Excluindo...';
+    }
+    try {
+      await apiPut("requests.php?action=clear_image", { id: currentImageData.id });
+      // Atualiza flag local e recarrega lista para refletir 🖼️ -> —
+      const req = requests.find((r) => Number(r.id) === Number(currentImageData.id));
+      if (req) {
+        req.has_imagem = 0;
+        req.imagem_nome = null;
+      }
+      const delReq = deletedRequests.find((r) => Number(r.id) === Number(currentImageData.id));
+      if (delReq) {
+        delReq.has_imagem = 0;
+        delReq.imagem_nome = null;
+      }
+      closeModal("modalImage");
+      renderRequests();
+      // Se estiver no dashboard, atualiza também
+      const active = $(".nav-link.active[data-view]");
+      if (active && active.dataset.view === "dashboard") renderDashboard();
+    } catch (e) {
+      alert("Erro ao excluir imagem: " + (e.message || "erro desconhecido"));
+      if (delBtn) {
+        delBtn.disabled = false;
+        delBtn.style.opacity = "1";
+        delBtn.style.pointerEvents = "auto";
+        delBtn.innerHTML = originalText;
+      }
     }
   }
 
@@ -835,6 +885,14 @@
       dlBtn.disabled = true;
       dlBtn.style.opacity = "0.5";
       dlBtn.style.pointerEvents = "none";
+      dlBtn.innerHTML = '<span>⬇️</span> Baixar';
+    }
+    const delBtn = $("#btnDeleteImage");
+    if (delBtn) {
+      delBtn.disabled = true;
+      delBtn.style.opacity = "0.5";
+      delBtn.style.pointerEvents = "none";
+      delBtn.innerHTML = '<span>🗑️</span> Excluir';
     }
     currentImageData = null;
   }
@@ -3170,9 +3228,11 @@
       btn.addEventListener("click", () => closeModal(btn.dataset.close));
     });
 
-    // Download image (modal imagem)
+    // Download / Delete image (modal imagem)
     const dlBtn = $("#btnDownloadImage");
     if (dlBtn) dlBtn.addEventListener("click", downloadCurrentImage);
+    const delImgBtn = $("#btnDeleteImage");
+    if (delImgBtn) delImgBtn.addEventListener("click", deleteCurrentImage);
 
     // Overlay clicks
     $$(".modal-overlay").forEach((overlay) => {
