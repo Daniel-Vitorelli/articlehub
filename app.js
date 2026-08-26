@@ -27,7 +27,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.2.0";
+  const APP_VERSION = "1.2.1";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -643,7 +643,7 @@
     const tbody = $("#requestsTableBody");
 
     if (visible.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma solicitação encontrada.</p></div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="10"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma solicitação encontrada.</p></div></td></tr>`;
       $("#tableInfo").textContent = "Nenhuma solicitação";
       return;
     }
@@ -694,6 +694,7 @@
           }</td>
           <td><span class="priority-indicator ${r.priority}"><span class="priority-dot"></span>${priorityLabel(r.priority)}</span></td>
           <td>${formatDate(r.deadline)}</td>
+          <td style="text-align:center; font-size:1.1em;">${Number(r.has_imagem) ? '<span title="Com imagem">🖼️</span>' : '<span style="opacity:0.35" title="Sem imagem">—</span>'}</td>
           <td>
             <div class="row-actions">
               ${pendencyBtn}
@@ -1664,6 +1665,7 @@
           <div class="detail-item"><div class="detail-label">Nicho</div><div class="detail-value">${escapeHtml(nicheName)}</div></div>
           <div class="detail-item"><div class="detail-label">Finalidade</div><div class="detail-value">${purposeLabel}</div></div>
           <div class="detail-item"><div class="detail-label">Tipo</div><div class="detail-value">${typeLabel}</div></div>
+          <div class="detail-item"><div class="detail-label">Imagem</div><div class="detail-value">${Number(r.has_imagem) ? '🖼️ Com imagem' : '— Sem imagem'}</div></div>
         </div>
       </div>
       ${r.instructions ? `<div class="detail-section"><h4>Instruções</h4><div class="detail-instructions">${escapeHtml(r.instructions)}</div></div>` : ""}

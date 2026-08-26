@@ -17,9 +17,8 @@ function getRequestPublicFields(): string
     // wordcount, deadline, instructions, language, purpose, content_type,
     // niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
     // imagem MEDIUMBLOB, created_at, updated_at
-    // `imagem` é propositalmente deixada de FORA da listagem — é pesada (BLOB)
-    // e quebraria o JSON se fosse base64 em lista. Se precisar, crie endpoint
-    // dedicado: GET requests.php?action=image&id=XX
+    // `imagem` NÃO é carregada — pesada (MEDIUMBLOB). Em vez disso retornamos
+    // apenas flag leve `has_imagem` (0/1) via IS NOT NULL para uso visual na tabela.
     return '
         r.id,
         r.keyword,
@@ -40,8 +39,8 @@ function getRequestPublicFields(): string
         r.status_compliance,
         r.resumo_analise,
         r.created_at,
-        r.updated_at
-        -- r.imagem  -- DESATIVADO: descomente apenas se criar endpoint dedicado
+        r.updated_at,
+        (r.imagem IS NOT NULL) AS has_imagem
     ';
 }
 
