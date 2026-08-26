@@ -21,14 +21,14 @@
   let currentMsgTab = "inbox";
   let pollInterval = null;
   let complianceHistoryProvider = null;
-  let currentImageData = null; // { id, mime, b64 } - só fica em memória enquanto modal aberto
+  let currentImageData = null; // { id, mime, b64, filename } - só fica em memória enquanto modal aberto
   let periodicAnalysisGroups = [];
   let periodicAnalysisVisible = [];
   let periodicAnalysisLoaded = 0;
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.2.3";
+  const APP_VERSION = "1.2.4";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -780,7 +780,8 @@
       const data = await apiGet(`requests.php?action=image&id=${id}`);
       const mime = data.mime || "image/jpeg";
       const b64 = data.image;
-      currentImageData = { id, mime, b64 };
+      const filename = data.filename || null; // vem de imagem_nome no banco
+      currentImageData = { id, mime, b64, filename };
       img.src = `data:${mime};base64,${b64}`;
       // Espera carregar para esconder loader e mostrar info de proporção
       await new Promise((resolve, reject) => {
@@ -793,7 +794,8 @@
       if (infoEl) {
         const w = img.naturalWidth;
         const h = img.naturalHeight;
-        infoEl.textContent = w && h ? `${w} × ${h} • ${mime} • proporção original` : `${mime} • proporção original`;
+        const namePart = filename ? ` • ${filename}` : "";
+        infoEl.textContent = w && h ? `${w} × ${h} • ${mime}${namePart} • proporção original` : `${mime}${namePart} • proporção original`;
       }
       if (dlBtn) {
         dlBtn.disabled = false;
@@ -853,8 +855,18 @@
 
   function downloadCurrentImage() {
     if (!currentImageData || !currentImageData.b64) return;
-    const ext = mimeToExt(currentImageData.mime);
-    const filename = `solicitacao-${currentImageData.id}.${ext}`;
+    // Prioriza imagem_nome do banco; fallback = solicitacao-{id}.ext
+    let filename = currentImageData.filename;
+    if (filename && String(filename).trim() !== "") {
+      filename = String(filename).trim();
+      // Se não tem extensão, adiciona pela mime
+      if (!filename.includes(".")) {
+        filename += "." + mimeToExt(currentImageData.mime);
+      }
+    } else {
+      const ext = mimeToExt(currentImageData.mime);
+      filename = `solicitacao-${currentImageData.id}.${ext}`;
+    }
     const link = document.createElement("a");
     link.href = `data:${currentImageData.mime};base64,${currentImageData.b64}`;
     link.download = filename;

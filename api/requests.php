@@ -12,13 +12,13 @@ require_once __DIR__ . '/config.php';
 // -------------------------------------------------------------
 function getRequestPublicFields(): string
 {
-    // Estrutura atual de `requests` (19 cols + imagem):
+    // Estrutura atual de `requests` (19 cols + imagem + imagem_nome):
     // id, keyword, domain_id, writer_id, requested_by_id, status, priority,
     // wordcount, deadline, instructions, language, purpose, content_type,
     // niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
-    // imagem MEDIUMBLOB, created_at, updated_at
+    // imagem MEDIUMBLOB, imagem_nome VARCHAR, created_at, updated_at
     // `imagem` NÃO é carregada — pesada (MEDIUMBLOB). Em vez disso retornamos
-    // apenas flag leve `has_imagem` (0/1) via IS NOT NULL para uso visual na tabela.
+    // apenas flag leve `has_imagem` (0/1) via IS NOT NULL + `imagem_nome` para filename.
     return '
         r.id,
         r.keyword,
@@ -40,7 +40,8 @@ function getRequestPublicFields(): string
         r.resumo_analise,
         r.created_at,
         r.updated_at,
-        (r.imagem IS NOT NULL) AS has_imagem
+        (r.imagem IS NOT NULL) AS has_imagem,
+        r.imagem_nome
     ';
 }
 
@@ -66,7 +67,7 @@ function getRequestInternalFields(): string
         id, keyword, domain_id, writer_id, requested_by_id, status, priority,
         wordcount, deadline, instructions, language, purpose, content_type,
         niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
-        created_at, updated_at
+        imagem_nome, created_at, updated_at
         -- , imagem  -- só inclua se a lógica de update precisar validar imagem
     ';
 }
@@ -590,8 +591,8 @@ function getRequestImage(): void
     }
 
     $db = getDB();
-    // Só carrega o BLOB quando solicitado
-    $stmt = $db->prepare('SELECT imagem, requested_by_id, writer_id FROM requests WHERE id = ?');
+    // Só carrega o BLOB quando solicitado (+ nome original se existir)
+    $stmt = $db->prepare('SELECT imagem, imagem_nome, requested_by_id, writer_id FROM requests WHERE id = ?');
     $stmt->execute([$id]);
     $r = $stmt->fetch();
     if (!$r) {
@@ -657,7 +658,11 @@ function getRequestImage(): void
         }
     }
 
-    jsonResponse(200, ['image' => $b64, 'mime' => $mime]);
+    // Usa imagem_nome como filename se existir, senão fallback tratado no frontend
+    $filename = $r['imagem_nome'] ?? null;
+    if ($filename !== null) $filename = trim($filename);
+
+    jsonResponse(200, ['image' => $b64, 'mime' => $mime, 'filename' => $filename]);
 }
 
 // Reset Compliance
