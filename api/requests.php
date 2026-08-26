@@ -4,6 +4,74 @@
 // ============================================
 require_once __DIR__ . '/config.php';
 
+// -------------------------------------------------------------
+// CAMPOS EXPOSTOS NA LISTAGEM
+// Remova manualmente qualquer campo que NÃO quer expor no JSON.
+// Ex: se não quer expor 'instructions', 'resumo_analise' ou
+// 'wp_edit_url', basta apagar a linha correspondente.
+// -------------------------------------------------------------
+function getRequestPublicFields(): string
+{
+    // Estrutura atual de `requests` (19 cols + imagem):
+    // id, keyword, domain_id, writer_id, requested_by_id, status, priority,
+    // wordcount, deadline, instructions, language, purpose, content_type,
+    // niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
+    // imagem MEDIUMBLOB, created_at, updated_at
+    // `imagem` é propositalmente deixada de FORA da listagem — é pesada (BLOB)
+    // e quebraria o JSON se fosse base64 em lista. Se precisar, crie endpoint
+    // dedicado: GET requests.php?action=image&id=XX
+    return '
+        r.id,
+        r.keyword,
+        r.domain_id,
+        r.writer_id,
+        r.requested_by_id,
+        r.status,
+        r.priority,
+        r.wordcount,
+        r.deadline,
+        r.language,
+        r.purpose,
+        r.content_type,
+        r.niche_id,
+        r.instructions,
+        r.published_url,
+        r.wp_edit_url,
+        r.status_compliance,
+        r.resumo_analise,
+        r.created_at,
+        r.updated_at
+        -- r.imagem  -- DESATIVADO: descomente apenas se criar endpoint dedicado
+    ';
+}
+
+function getHistoryPublicFields(): string
+{
+    return '
+        rh.id,
+        rh.request_id,
+        rh.user_id,
+        rh.action,
+        rh.changes,
+        rh.url,
+        rh.created_at
+    ';
+}
+
+// Campos internos (usados só para validação no PHP, não vão para o frontend)
+// Mantidos explícitos para evitar SELECT * também internamente
+// `imagem` NÃO entra aqui para não carregar BLOB em validações simples
+function getRequestInternalFields(): string
+{
+    return '
+        id, keyword, domain_id, writer_id, requested_by_id, status, priority,
+        wordcount, deadline, instructions, language, purpose, content_type,
+        niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
+        created_at, updated_at
+        -- , imagem  -- só inclua se a lógica de update precisar validar imagem
+    ';
+}
+
 $method = $_SERVER['REQUEST_METHOD'];
 $action = getAction();
 
@@ -47,56 +115,61 @@ function listRequests(): void
 {
     $user = requireAuth();
     $db = getDB();
+    $fields = getRequestPublicFields();
+    $historyFields = getHistoryPublicFields();
 
     if ($user['role'] === 'admin' || $user['role'] === 'revisor') {
-        $sql = 'SELECT r.*, d.blog_name, d.color, d.url AS domain_url,
+        $sql = "SELECT {$fields},
+                       d.blog_name, d.color, d.url AS domain_url,
                        w.name AS writer_name, g.name AS requester_name,
-                       (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = "unresolved") AS unresolved_pendencies_count
+                       (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = \"unresolved\") AS unresolved_pendencies_count
                 FROM requests r
                 LEFT JOIN domains d ON r.domain_id = d.id
                 LEFT JOIN users w ON r.writer_id = w.id
                 LEFT JOIN users g ON r.requested_by_id = g.id
-                WHERE r.status != "deleted"
-                ORDER BY FIELD(r.status, "pending","in-progress","review","done","published","revisado"), r.deadline';
+                WHERE r.status != \"deleted\"
+                ORDER BY FIELD(r.status, \"pending\",\"in-progress\",\"review\",\"done\",\"published\",\"revisado\"), r.deadline";
         $stmt = $db->query($sql);
     }
     elseif ($user['role'] === 'gestor') {
-        $sql = 'SELECT r.*, d.blog_name, d.color, d.url AS domain_url,
+        $sql = "SELECT {$fields},
+                       d.blog_name, d.color, d.url AS domain_url,
                        w.name AS writer_name, g.name AS requester_name,
-                       (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = "unresolved") AS unresolved_pendencies_count
+                       (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = \"unresolved\") AS unresolved_pendencies_count
                 FROM requests r
                 LEFT JOIN domains d ON r.domain_id = d.id
                 LEFT JOIN users w ON r.writer_id = w.id
                 LEFT JOIN users g ON r.requested_by_id = g.id
-                WHERE r.requested_by_id = ? AND r.status != "deleted"
-                ORDER BY FIELD(r.status, "pending","in-progress","review","done","published","revisado"), r.deadline';
+                WHERE r.requested_by_id = ? AND r.status != \"deleted\"
+                ORDER BY FIELD(r.status, \"pending\",\"in-progress\",\"review\",\"done\",\"published\",\"revisado\"), r.deadline";
         $stmt = $db->prepare($sql);
         $stmt->execute([$user['id']]);
     }
     else {
         // redator — see assigned requests AND self-created requests
-        $sql = 'SELECT r.*, d.blog_name, d.color, d.url AS domain_url,
+        $sql = "SELECT {$fields},
+                       d.blog_name, d.color, d.url AS domain_url,
                        w.name AS writer_name, g.name AS requester_name,
-                       (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = "unresolved") AS unresolved_pendencies_count
+                       (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = \"unresolved\") AS unresolved_pendencies_count
                 FROM requests r
                 LEFT JOIN domains d ON r.domain_id = d.id
                 LEFT JOIN users w ON r.writer_id = w.id
                 LEFT JOIN users g ON r.requested_by_id = g.id
-                WHERE (r.writer_id = ? OR r.requested_by_id = ?) AND r.status != "deleted"
-                ORDER BY FIELD(r.status, "pending","in-progress","review","done","published","revisado"), r.deadline';
+                WHERE (r.writer_id = ? OR r.requested_by_id = ?) AND r.status != \"deleted\"
+                ORDER BY FIELD(r.status, \"pending\",\"in-progress\",\"review\",\"done\",\"published\",\"revisado\"), r.deadline";
         $stmt = $db->prepare($sql);
         $stmt->execute([$user['id'], $user['id']]);
     }
 
     $requests = $stmt->fetchAll();
 
-    // Attach history for each
+    // Attach history for each — agora também sem SELECT *
     foreach ($requests as &$r) {
-        $hStmt = $db->prepare('SELECT rh.*, u.name AS user_name
+        $hStmt = $db->prepare("SELECT {$historyFields}, u.name AS user_name
                                FROM request_history rh
                                LEFT JOIN users u ON rh.user_id = u.id
                                WHERE rh.request_id = ?
-                               ORDER BY rh.created_at');
+                               ORDER BY rh.created_at");
         $hStmt->execute([$r['id']]);
         $r['history'] = $hStmt->fetchAll();
         // Parse JSON changes
@@ -113,28 +186,31 @@ function listDeletedRequests(): void
 {
     $user = requireAuth();
     $db = getDB();
+    $fields = getRequestPublicFields();
 
     if ($user['role'] === 'admin') {
-        $sql = 'SELECT r.*, d.blog_name, d.color, d.url AS domain_url,
+        $sql = "SELECT {$fields},
+                       d.blog_name, d.color, d.url AS domain_url,
                        w.name AS writer_name, g.name AS requester_name
                 FROM requests r
                 LEFT JOIN domains d ON r.domain_id = d.id
                 LEFT JOIN users w ON r.writer_id = w.id
                 LEFT JOIN users g ON r.requested_by_id = g.id
-                WHERE r.status = "deleted"
-                ORDER BY r.updated_at DESC';
+                WHERE r.status = \"deleted\"
+                ORDER BY r.updated_at DESC";
         $stmt = $db->query($sql);
     }
     else {
         // Redator/Gestor/Revisor só veem os deletados que eles mesmos solicitaram
-        $sql = 'SELECT r.*, d.blog_name, d.color, d.url AS domain_url,
+        $sql = "SELECT {$fields},
+                       d.blog_name, d.color, d.url AS domain_url,
                        w.name AS writer_name, g.name AS requester_name
                 FROM requests r
                 LEFT JOIN domains d ON r.domain_id = d.id
                 LEFT JOIN users w ON r.writer_id = w.id
                 LEFT JOIN users g ON r.requested_by_id = g.id
-                WHERE r.requested_by_id = ? AND r.status = "deleted"
-                ORDER BY r.updated_at DESC';
+                WHERE r.requested_by_id = ? AND r.status = \"deleted\"
+                ORDER BY r.updated_at DESC";
         $stmt = $db->prepare($sql);
         $stmt->execute([$user['id']]);
     }
@@ -204,7 +280,9 @@ function updateRequest(): void
         jsonResponse(400, ['error' => 'ID obrigatório.']);
 
     $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM requests WHERE id = ?');
+    // SELECT explícito (era SELECT *) — uso interno, não exposto
+    $internalFields = getRequestInternalFields();
+    $stmt = $db->prepare("SELECT {$internalFields} FROM requests WHERE id = ?");
     $stmt->execute([$id]);
     $r = $stmt->fetch();
     if (!$r)
@@ -276,7 +354,8 @@ function updateStatus(): void
     }
 
     $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM requests WHERE id = ?');
+    $internalFields = getRequestInternalFields();
+    $stmt = $db->prepare("SELECT {$internalFields} FROM requests WHERE id = ?");
     $stmt->execute([$id]);
     $r = $stmt->fetch();
     if (!$r)
@@ -370,7 +449,8 @@ function publishRequest(): void
     }
 
     $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM requests WHERE id = ?');
+    $internalFields = getRequestInternalFields();
+    $stmt = $db->prepare("SELECT {$internalFields} FROM requests WHERE id = ?");
     $stmt->execute([$id]);
     $r = $stmt->fetch();
     if (!$r)
@@ -511,7 +591,8 @@ function resetCompliance(): void
     }
 
     $db = getDB();
-    $stmt = $db->prepare('SELECT * FROM requests WHERE id = ?');
+    $internalFields = getRequestInternalFields();
+    $stmt = $db->prepare("SELECT {$internalFields} FROM requests WHERE id = ?");
     $stmt->execute([$id]);
     $r = $stmt->fetch();
     if (!$r)
