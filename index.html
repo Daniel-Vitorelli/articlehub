@@ -1149,18 +1149,29 @@
 
   <!-- ========== MODAL: IMAGEM ========== -->
   <div class="modal-overlay" id="modalImage">
-    <div class="modal" style="max-width: 800px;">
-      <div class="modal-header">
-        <h3>🖼️ Imagem</h3>
+    <div class="modal" style="max-width: 900px; width: 95vw; max-height: 92vh; display:flex; flex-direction:column; overflow:hidden;">
+      <div class="modal-header" style="padding:20px 24px; border-bottom:1px solid var(--border-color); flex-shrink:0;">
+        <h3 style="display:flex; align-items:center; gap:10px; font-size:1.05rem;">
+          <span style="width:36px; height:36px; background:var(--gradient-primary); border-radius:10px; display:flex; align-items:center; justify-content:center; font-size:1.2rem; flex-shrink:0;">🖼️</span>
+          <span>Imagem da Solicitação</span>
+          <span id="imageModalId" style="font-weight:400; font-size:0.8rem; color:var(--text-muted); margin-left:4px;"></span>
+        </h3>
         <button class="modal-close" data-close="modalImage" aria-label="Fechar">✕</button>
       </div>
-      <div class="modal-body" style="text-align:center; padding:0;">
-        <div id="imageLoader" style="padding:2rem;"><span class="spinner"></span> Carregando imagem...</div>
-        <img id="modalImageEl" style="max-width:100%; max-height:70vh; display:none; margin:0 auto;" alt="Imagem da solicitação">
-        <p id="imageError" style="display:none; padding:2rem; color:var(--accent-danger);"></p>
+      <div class="modal-body" style="padding:0; background:#08080c; flex:1; display:flex; align-items:center; justify-content:center; min-height:320px; position:relative; overflow:auto;">
+        <div id="imageLoader" style="display:flex; flex-direction:column; align-items:center; gap:12px; padding:2rem; color:var(--text-muted);">
+          <span class="spinner" style="width:32px; height:32px; border:3px solid rgba(127,90,240,0.2); border-top-color:var(--accent-primary); border-radius:50%; animation:spin 0.8s linear infinite; display:inline-block;"></span>
+          <span style="font-size:0.85rem;">Carregando imagem...</span>
+        </div>
+        <img id="modalImageEl" style="max-width:100%; max-height:75vh; width:auto; height:auto; object-fit:contain; display:none; margin:auto; border-radius:8px; box-shadow:0 8px 32px rgba(0,0,0,0.5);" alt="Imagem da solicitação">
+        <p id="imageError" style="display:none; padding:2rem; color:var(--accent-danger); text-align:center; max-width:420px; font-size:0.9rem;"></p>
       </div>
-      <div class="modal-footer">
-        <button class="btn-secondary" data-close="modalImage">Fechar</button>
+      <div class="modal-footer" style="padding:16px 24px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid var(--border-color); flex-shrink:0; background:var(--bg-secondary);">
+        <span id="imageInfo" style="font-size:0.8rem; color:var(--text-muted);">Proporção original preservada • sem cortes</span>
+        <div style="display:flex; gap:10px;">
+          <button class="btn-primary" id="btnDownloadImage" disabled style="opacity:0.5; pointer-events:none;"><span>⬇️</span> Baixar Imagem</button>
+          <button class="btn-secondary" data-close="modalImage">Fechar</button>
+        </div>
       </div>
     </div>
   </div>

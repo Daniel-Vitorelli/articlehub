@@ -21,13 +21,14 @@
   let currentMsgTab = "inbox";
   let pollInterval = null;
   let complianceHistoryProvider = null;
+  let currentImageData = null; // { id, mime, b64 } - só fica em memória enquanto modal aberto
   let periodicAnalysisGroups = [];
   let periodicAnalysisVisible = [];
   let periodicAnalysisLoaded = 0;
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.2.2";
+  const APP_VERSION = "1.2.3";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -750,32 +751,63 @@
 
   // --- Imagem lazy load (só carrega BLOB ao clicar) ---
   async function openImageModal(id) {
-    const modal = $("#modalImage");
     const img = $("#modalImageEl");
     const loader = $("#imageLoader");
     const errEl = $("#imageError");
+    const infoEl = $("#imageInfo");
+    const idEl = $("#imageModalId");
+    const dlBtn = $("#btnDownloadImage");
     // Reset estado
-    img.style.display = "none";
-    img.removeAttribute("src");
+    currentImageData = null;
+    if (img) {
+      img.style.display = "none";
+      img.removeAttribute("src");
+    }
     if (errEl) {
       errEl.style.display = "none";
       errEl.textContent = "";
     }
-    if (loader) loader.style.display = "block";
+    if (loader) loader.style.display = "flex";
+    if (idEl) idEl.textContent = `#${id}`;
+    if (infoEl) infoEl.textContent = "Carregando...";
+    if (dlBtn) {
+      dlBtn.disabled = true;
+      dlBtn.style.opacity = "0.5";
+      dlBtn.style.pointerEvents = "none";
+    }
     openModal("modalImage");
     try {
       const data = await apiGet(`requests.php?action=image&id=${id}`);
       const mime = data.mime || "image/jpeg";
       const b64 = data.image;
+      currentImageData = { id, mime, b64 };
       img.src = `data:${mime};base64,${b64}`;
+      // Espera carregar para esconder loader e mostrar info de proporção
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = reject;
+      });
       if (loader) loader.style.display = "none";
       img.style.display = "block";
+      // Mostra info preservando proporção original (sem esticar)
+      if (infoEl) {
+        const w = img.naturalWidth;
+        const h = img.naturalHeight;
+        infoEl.textContent = w && h ? `${w} × ${h} • ${mime} • proporção original` : `${mime} • proporção original`;
+      }
+      if (dlBtn) {
+        dlBtn.disabled = false;
+        dlBtn.style.opacity = "1";
+        dlBtn.style.pointerEvents = "auto";
+      }
     } catch (e) {
       if (loader) loader.style.display = "none";
       if (errEl) {
         errEl.textContent = e.message || "Erro ao carregar imagem";
         errEl.style.display = "block";
       }
+      if (infoEl) infoEl.textContent = "Erro ao carregar";
+      currentImageData = null;
     }
   }
 
@@ -792,6 +824,43 @@
       errEl.style.display = "none";
       errEl.textContent = "";
     }
+    const idEl = $("#imageModalId");
+    if (idEl) idEl.textContent = "";
+    const infoEl = $("#imageInfo");
+    if (infoEl) infoEl.textContent = "Proporção original preservada • sem cortes";
+    const dlBtn = $("#btnDownloadImage");
+    if (dlBtn) {
+      dlBtn.disabled = true;
+      dlBtn.style.opacity = "0.5";
+      dlBtn.style.pointerEvents = "none";
+    }
+    currentImageData = null;
+  }
+
+  function mimeToExt(mime) {
+    const map = {
+      "image/jpeg": "jpg",
+      "image/jpg": "jpg",
+      "image/png": "png",
+      "image/webp": "webp",
+      "image/gif": "gif",
+      "image/bmp": "bmp",
+      "image/svg+xml": "svg",
+      "image/avif": "avif",
+    };
+    return map[mime] || "jpg";
+  }
+
+  function downloadCurrentImage() {
+    if (!currentImageData || !currentImageData.b64) return;
+    const ext = mimeToExt(currentImageData.mime);
+    const filename = `solicitacao-${currentImageData.id}.${ext}`;
+    const link = document.createElement("a");
+    link.href = `data:${currentImageData.mime};base64,${currentImageData.b64}`;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   }
 
   function complianceStatusLabel(value) {
@@ -3088,6 +3157,10 @@
     $$("[data-close]").forEach((btn) => {
       btn.addEventListener("click", () => closeModal(btn.dataset.close));
     });
+
+    // Download image (modal imagem)
+    const dlBtn = $("#btnDownloadImage");
+    if (dlBtn) dlBtn.addEventListener("click", downloadCurrentImage);
 
     // Overlay clicks
     $$(".modal-overlay").forEach((overlay) => {
