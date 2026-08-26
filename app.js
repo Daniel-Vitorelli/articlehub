@@ -27,7 +27,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.2.1";
+  const APP_VERSION = "1.2.2";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -694,7 +694,7 @@
           }</td>
           <td><span class="priority-indicator ${r.priority}"><span class="priority-dot"></span>${priorityLabel(r.priority)}</span></td>
           <td>${formatDate(r.deadline)}</td>
-          <td style="text-align:center; font-size:1.1em;">${Number(r.has_imagem) ? '<span title="Com imagem">🖼️</span>' : '<span style="opacity:0.35" title="Sem imagem">—</span>'}</td>
+          <td style="text-align:center; font-size:1.1em;">${Number(r.has_imagem) ? `<span class="image-view-btn" data-image-id="${r.id}" title="Clique para ver imagem" style="cursor:pointer">🖼️</span>` : '<span style="opacity:0.35" title="Sem imagem">—</span>'}</td>
           <td>
             <div class="row-actions">
               ${pendencyBtn}
@@ -739,6 +739,59 @@
         openComplianceModal(Number(el.dataset.complianceId));
       });
     });
+
+    tbody.querySelectorAll("[data-image-id]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openImageModal(Number(el.dataset.imageId));
+      });
+    });
+  }
+
+  // --- Imagem lazy load (só carrega BLOB ao clicar) ---
+  async function openImageModal(id) {
+    const modal = $("#modalImage");
+    const img = $("#modalImageEl");
+    const loader = $("#imageLoader");
+    const errEl = $("#imageError");
+    // Reset estado
+    img.style.display = "none";
+    img.removeAttribute("src");
+    if (errEl) {
+      errEl.style.display = "none";
+      errEl.textContent = "";
+    }
+    if (loader) loader.style.display = "block";
+    openModal("modalImage");
+    try {
+      const data = await apiGet(`requests.php?action=image&id=${id}`);
+      const mime = data.mime || "image/jpeg";
+      const b64 = data.image;
+      img.src = `data:${mime};base64,${b64}`;
+      if (loader) loader.style.display = "none";
+      img.style.display = "block";
+    } catch (e) {
+      if (loader) loader.style.display = "none";
+      if (errEl) {
+        errEl.textContent = e.message || "Erro ao carregar imagem";
+        errEl.style.display = "block";
+      }
+    }
+  }
+
+  function clearImageModal() {
+    const img = $("#modalImageEl");
+    if (img) {
+      img.removeAttribute("src");
+      img.style.display = "none";
+    }
+    const loader = $("#imageLoader");
+    if (loader) loader.style.display = "none";
+    const errEl = $("#imageError");
+    if (errEl) {
+      errEl.style.display = "none";
+      errEl.textContent = "";
+    }
   }
 
   function complianceStatusLabel(value) {
@@ -1349,13 +1402,16 @@
   function closeModal(id) {
     $(`#${id}`).classList.remove("active");
     document.body.style.overflow = "";
+    if (id === "modalImage") clearImageModal();
   }
 
   function closeAllModals() {
+    const wasImageOpen = $("#modalImage")?.classList.contains("active");
     $$(".modal-overlay.active").forEach((m) => {
       m.classList.remove("active");
     });
     document.body.style.overflow = "";
+    if (wasImageOpen) clearImageModal();
   }
 
   // ---- Populate select elements ----

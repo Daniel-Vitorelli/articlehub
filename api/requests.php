@@ -76,7 +76,9 @@ $action = getAction();
 
 switch ($method) {
     case 'GET':
-        if ($action === 'deleted') {
+        if ($action === 'image') {
+            getRequestImage();
+        } elseif ($action === 'deleted') {
             listDeletedRequests();
         } else {
             listRequests();
@@ -576,6 +578,86 @@ function restoreRequest(): void
     $stmt->execute([$id, $user['id'], $changes]);
 
     jsonResponse(200, ['message' => 'Solicitação recuperada com sucesso.']);
+}
+
+// --- Get Image (lazy load) ---
+function getRequestImage(): void
+{
+    $user = requireAuth();
+    $id = (int)($_GET['id'] ?? 0);
+    if (!$id) {
+        jsonResponse(400, ['error' => 'ID obrigatório.']);
+    }
+
+    $db = getDB();
+    // Só carrega o BLOB quando solicitado
+    $stmt = $db->prepare('SELECT imagem, requested_by_id, writer_id FROM requests WHERE id = ?');
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) {
+        jsonResponse(404, ['error' => 'Solicitação não encontrada.']);
+    }
+
+    // Permissão: admin/revisor vê tudo; gestor/redator só se for dono ou redator atribuído
+    $canView = false;
+    if (in_array($user['role'], ['admin', 'revisor'])) {
+        $canView = true;
+    } elseif ((int)$r['requested_by_id'] === (int)$user['id'] || (int)$r['writer_id'] === (int)$user['id']) {
+        $canView = true;
+    }
+    if (!$canView) {
+        jsonResponse(403, ['error' => 'Sem permissão para ver a imagem desta solicitação.']);
+    }
+
+    if ($r['imagem'] === null || $r['imagem'] === '') {
+        jsonResponse(404, ['error' => 'Solicitação sem imagem.']);
+    }
+
+    $blob = $r['imagem'];
+    $mime = 'image/jpeg';
+    $b64 = '';
+
+    // Caso já esteja como data URI (data:image/...;base64,XXXX)
+    $trimmed = ltrim($blob);
+    if (strpos($trimmed, 'data:image') === 0) {
+        if (preg_match('#^data:(image/[^;]+);base64,(.+)$#s', $trimmed, $m)) {
+            $mime = $m[1];
+            $b64 = trim($m[2]);
+        } else {
+            // fallback: extrai após vírgula
+            $parts = explode(',', $trimmed, 2);
+            $b64 = trim(end($parts));
+        }
+    } else {
+        // Verifica se já é string base64 (sem binário)
+        $isBase64 = false;
+        // Heurística: só chars base64 e tamanho múltiplo de 4
+        if (preg_match('#^[A-Za-z0-9+/=\r\n]+$#', $blob) && (strlen(trim($blob)) % 4 === 0)) {
+            $decoded = base64_decode(trim($blob), true);
+            if ($decoded !== false) {
+                $finfo = new finfo(FILEINFO_MIME_TYPE);
+                $decodedMime = $finfo->buffer($decoded);
+                if ($decodedMime && strpos($decodedMime, 'image/') === 0) {
+                    $isBase64 = true;
+                    $b64 = trim($blob);
+                    $mime = $decodedMime;
+                }
+            }
+        }
+        if (!$isBase64) {
+            // Blob binário puro -> codifica agora
+            $b64 = base64_encode($blob);
+            if (class_exists('finfo')) {
+                $finfo = new finfo(FILEINFO_MIME_TYPE);
+                $detected = $finfo->buffer($blob);
+                if ($detected && strpos($detected, 'image/') === 0) {
+                    $mime = $detected;
+                }
+            }
+        }
+    }
+
+    jsonResponse(200, ['image' => $b64, 'mime' => $mime]);
 }
 
 // Reset Compliance
