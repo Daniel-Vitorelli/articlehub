@@ -1499,6 +1499,7 @@
   //  DOMAINS VIEW (ADMIN)
   // ============================================
   function renderDomains() {
+    const isAdmin = is("admin");
     const tbody = $("#domainsTableBody");
     tbody.innerHTML = domains
       .map(
@@ -1507,6 +1508,11 @@
         <td><div class="blog-name"><span class="blog-dot" style="background:${d.color}"></span><strong>${escapeHtml(d.blog_name)}</strong></div></td>
         <td><a href="${escapeHtml(d.url)}" target="_blank" style="color:var(--accent-info);text-decoration:none">${escapeHtml(d.url)}</a></td>
         <td>${escapeHtml(d.niche)}</td>
+        <td style="text-align:center;">
+          <label style="cursor:${isAdmin ? "pointer" : "not-allowed"}; display:inline-flex; align-items:center; justify-content:center;">
+            <input type="checkbox" data-automacao-id="${d.id}" ${Number(d.automacao_imagem) ? "checked" : ""} ${isAdmin ? "" : "disabled"} title="${isAdmin ? "Ativar/desativar automação de imagem" : "Apenas admins podem alterar"}" style="width:18px; height:18px; accent-color:var(--accent-primary); cursor:${isAdmin ? "pointer" : "not-allowed"};">
+          </label>
+        </td>
         <td><span class="status-badge ${d.active ? "done" : "pending"}">${d.active ? "Ativo" : "Inativo"}</span></td>
         <td>
           <div class="row-actions">
@@ -1527,6 +1533,28 @@
       btn.addEventListener("click", () =>
         deleteDomain(Number(btn.dataset.deleteDomain)),
       );
+    });
+    tbody.querySelectorAll("[data-automacao-id]").forEach((chk) => {
+      chk.addEventListener("change", async (e) => {
+        if (!isAdmin) {
+          e.preventDefault();
+          chk.checked = !chk.checked;
+          return;
+        }
+        const id = Number(chk.dataset.automacaoId);
+        const newVal = chk.checked ? 1 : 0;
+        chk.disabled = true;
+        try {
+          await apiPut("domains.php", { id, automacao_imagem: newVal });
+          const dom = domains.find((x) => Number(x.id) === id);
+          if (dom) dom.automacao_imagem = newVal;
+        } catch (err) {
+          chk.checked = !chk.checked;
+          alert("Erro ao atualizar automação: " + err.message);
+        } finally {
+          chk.disabled = false;
+        }
+      });
     });
   }
 
