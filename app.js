@@ -29,7 +29,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.2";
+  const APP_VERSION = "1.3.3";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -3189,11 +3189,11 @@
       return;
     }
 
-    // Se Visible esgotado mas ainda há mais no backend, busca próxima página
+    // Se Visible esgotado mas ainda há mais no backend, busca próxima página (imperceptível)
     if (periodicAnalysisLoaded < periodicAnalysisTotal) {
       const sentinel = document.getElementById("periodicScrollSentinel");
       if (sentinel) sentinel.remove();
-      tbody.insertAdjacentHTML("beforeend", `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando...</div></td></tr>`);
+      tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
       try {
         await fetchNextPeriodicPage();
         const s2 = document.getElementById("periodicScrollSentinel");
