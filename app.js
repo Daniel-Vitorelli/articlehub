@@ -29,7 +29,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.0";
+  const APP_VERSION = "1.3.1";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -1522,6 +1522,24 @@
   $("#periodicAnalysisBody").addEventListener("click", (e) => {
     const el = e.target.closest("[data-key]");
     if (el) openComplianceModalForPeriodic(el.dataset.key);
+  });
+
+  // Foco visual na linha da análise periódica (sem mudar layout)
+  const periodicBodyEl = $("#periodicAnalysisBody");
+  if (periodicBodyEl) {
+    periodicBodyEl.addEventListener("click", (e) => {
+      const tr = e.target.closest("tr");
+      if (!tr || tr.id === "periodicScrollSentinel" || !periodicBodyEl.contains(tr)) return;
+      periodicBodyEl.querySelectorAll("tr.is-focused").forEach((row) => row.classList.remove("is-focused"));
+      tr.classList.add("is-focused");
+    });
+  }
+  document.addEventListener("click", (e) => {
+    const body = $("#periodicAnalysisBody");
+    const panel = document.getElementById("viewComplianceAnalysis");
+    if (!body || !panel || !panel.classList.contains("active")) return;
+    if (e.target.closest("#periodicAnalysisBody tr") || e.target.closest("[data-key]")) return;
+    body.querySelectorAll("tr.is-focused").forEach((row) => row.classList.remove("is-focused"));
   });
 
   $("#btnResetCompliance").addEventListener("click", async () => {

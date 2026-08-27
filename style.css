@@ -986,6 +986,11 @@ select.filter-select option {
   background: rgba(127, 90, 240, 0.04);
 }
 
+.data-table tbody tr.is-focused {
+  background: rgba(127, 90, 240, 0.12) !important;
+  box-shadow: inset 3px 0 0 var(--accent-primary);
+}
+
 .compliance-history-row {
   cursor: pointer;
 }
