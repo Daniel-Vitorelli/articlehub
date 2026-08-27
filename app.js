@@ -1245,8 +1245,9 @@
       btn.innerHTML = RESET_BTN_LOADING_HTML;
     }
 
+    let res = null;
     try {
-      const res = await apiPost("periodic_analysis.php", payload);
+      res = await apiPost("periodic_analysis.php", payload);
 
       if (!res || !res.success) {
         throw new Error(res?.message || "Resposta inesperada do servidor.");
@@ -1271,12 +1272,131 @@
       }
     }
 
-    // Recarrega a lista fora do try/catch principal: falha aqui não deve
-    // disparar alert de erro da reanálise (o registro já foi criado).
+    // Atualização silenciosa: não mostra spinner na tabela de solicitações nem na periódica
+    // Apenas insere a nova linha no topo sem recarregar tudo com loading visível
+    if (!res || !res.id) return;
     try {
-      await renderComplianceAnalysis();
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, "0");
+      const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+      const newRow = {
+        id: res.id,
+        id_post: latest.id_post,
+        post_type: latest.post_type,
+        dominio: latest.dominio,
+        dominio_url: latest.dominio_url,
+        status_compliance: "nao_analisado",
+        resumo_analise: "esperanndo re-analise",
+        publish_status: payload.publish_status,
+        created_at: createdAt,
+      };
+      // Atualiza grupo
+      group.sorted.unshift(newRow);
+      // Verifica filtros atuais da view periódica
+      const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
+      const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
+      const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
+      const matchesFilter =
+        (!statusFilter || newRow.status_compliance === statusFilter) &&
+        (!typeFilter || newRow.post_type === typeFilter) &&
+        (!domainFilter || newRow.dominio === domainFilter);
+      const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
+      if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
+      if (matchesFilter) {
+        periodicAnalysisVisible.unshift(newRow);
+        periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        periodicAnalysisLoaded = Math.min(periodicAnalysisLoaded + 1, periodicAnalysisVisible.length);
+        periodicAnalysisTotal = Math.max(periodicAnalysisTotal, periodicAnalysisVisible.length);
+        const tbody = document.getElementById("periodicAnalysisBody");
+        if (tbody) {
+          const currentLoaded = periodicAnalysisLoaded;
+          const holder = document.createElement("tbody");
+          const toRender = periodicAnalysisVisible.slice(0, currentLoaded);
+          holder.innerHTML = toRender.map(periodicRowHtml).join("");
+          tbody.innerHTML = "";
+          while (holder.firstChild) tbody.appendChild(holder.firstChild);
+          const infoEl = document.getElementById("periodicAnalysisInfo");
+          if (infoEl) infoEl.textContent = `Mostrando ${currentLoaded} de ${periodicAnalysisTotal} análises`;
+          if (currentLoaded < periodicAnalysisTotal) {
+            tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+            if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+            periodicSentinelObserver = new IntersectionObserver(
+              (entries) => {
+                if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+              },
+              { rootMargin: "300px" },
+            );
+            periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
+          } else {
+            if (periodicSentinelObserver) {
+              periodicSentinelObserver.disconnect();
+              periodicSentinelObserver = null;
+            }
+            const s = document.getElementById("periodicScrollSentinel");
+            if (s) s.remove();
+          }
+          requestAnimationFrame(() => {
+            document.querySelectorAll("#periodicAnalysisBody tr").forEach((tr) => {
+              const badge = tr.querySelector("[data-key]");
+              if (badge && badge.getAttribute("data-key") === key) tr.classList.add("is-focused");
+            });
+          });
+        }
+      } else {
+        periodicAnalysisTotal = Math.max(periodicAnalysisTotal, periodicAnalysisVisible.length);
+        const infoEl = document.getElementById("periodicAnalysisInfo");
+        if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+      }
     } catch (e) {
-      console.error("Falha ao recarregar análises periódicas:", e);
+      console.error("Falha ao atualizar análise silenciosamente:", e);
+      // Fallback silencioso sem spinner visível na tabela de solicitações
+      try {
+        const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
+        const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
+        const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
+        const params = new URLSearchParams({ limit: String(PERIODIC_PAGE_SIZE), offset: "0" });
+        if (statusFilter) params.set("status", statusFilter);
+        if (typeFilter) params.set("post_type", typeFilter);
+        if (domainFilter) params.set("dominio", domainFilter);
+        const res2 = await apiGet(`periodic_analysis.php?${params.toString()}`);
+        const rows = Array.isArray(res2) ? res2 : res2.data || [];
+        const total = Array.isArray(res2) ? rows.length : res2.total || 0;
+        periodicAnalysisVisible = rows;
+        periodicAnalysisLoaded = rows.length;
+        periodicAnalysisTotal = total;
+        const groups = new Map();
+        rows.forEach((r) => {
+          const k = `${r.dominio}::${r.id_post ?? ""}`;
+          if (!groups.has(k)) groups.set(k, []);
+          groups.get(k).push(r);
+        });
+        periodicAnalysisGroups = [...groups.entries()].map(([k, entries]) => ({
+          key: k,
+          sorted: [...entries].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
+        }));
+        const tbody = document.getElementById("periodicAnalysisBody");
+        if (tbody) {
+          tbody.innerHTML = "";
+          const holder = document.createElement("tbody");
+          holder.innerHTML = rows.map(periodicRowHtml).join("");
+          while (holder.firstChild) tbody.appendChild(holder.firstChild);
+          const infoEl = document.getElementById("periodicAnalysisInfo");
+          if (infoEl) infoEl.textContent = `Mostrando ${rows.length} de ${total} análises`;
+          if (rows.length < total) {
+            tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+            if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+            periodicSentinelObserver = new IntersectionObserver(
+              (entries) => {
+                if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+              },
+              { rootMargin: "300px" },
+            );
+            periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
+          }
+        }
+      } catch (e2) {
+        console.error("Fallback silencioso falhou:", e2);
+      }
     }
   }
 

@@ -1,6 +1,7 @@
 -- ============================================
 -- ArticleHub — MySQL Database Schema
--- Execute este script no phpMyAdmin
+-- Execute este script no phpMyAdmin ou via docker-entrypoint-initdb.d
+-- Atualizado: 2026-08-27 — inclui imagem, imagem_nome, automacao_imagem, request_pendencies, periodic_analysis indexes
 -- ============================================
 
 -- Cria o banco de dados (se ainda não existir)
@@ -14,7 +15,7 @@ USE articlehub;
 -- TABELA: users
 -- Armazena todos os usuários do sistema
 -- ============================================
-CREATE TABLE users (
+CREATE TABLE IF NOT EXISTS users (
   id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   name        VARCHAR(150)    NOT NULL,
   email       VARCHAR(200)    NOT NULL UNIQUE,
@@ -34,17 +35,21 @@ CREATE TABLE users (
 -- TABELA: domains
 -- Blogs / domínios cadastrados
 -- ============================================
-CREATE TABLE `domains` (
-  `id` int UNSIGNED NOT NULL,
-  `blog_name` varchar(150) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `url` varchar(500) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `niche` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `color` varchar(7) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT '#7f5af0' COMMENT 'Cor hexadecimal',
-  `language` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `bloco_anuncio` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `active` tinyint(1) NOT NULL DEFAULT '1',
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+CREATE TABLE IF NOT EXISTS `domains` (
+  `id`                INT UNSIGNED    NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `blog_name`         VARCHAR(150)    NOT NULL,
+  `url`               VARCHAR(500)    NOT NULL,
+  `niche`             VARCHAR(100)    NOT NULL,
+  `color`             VARCHAR(7)      NOT NULL DEFAULT '#7f5af0' COMMENT 'Cor hexadecimal',
+  `language`          VARCHAR(20)     NOT NULL DEFAULT 'pt-br',
+  `bloco_anuncio`     TEXT            NOT NULL,
+  `active`            TINYINT(1)      NOT NULL DEFAULT 1,
+  `automacao_imagem`  TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '0=desativado, 1=ativa automação de imagem',
+  `created_at`        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at`        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+  INDEX idx_domains_active (active),
+  INDEX idx_domains_automacao (automacao_imagem)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -52,7 +57,7 @@ CREATE TABLE `domains` (
 -- TABELA: languages
 -- Idiomas disponíveis para solicitações
 -- ============================================
-CREATE TABLE languages (
+CREATE TABLE IF NOT EXISTS languages (
   id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   name        VARCHAR(100)    NOT NULL,
   code        VARCHAR(10)     NOT NULL UNIQUE,
@@ -68,7 +73,7 @@ CREATE TABLE languages (
 -- TABELA: niches
 -- Nichos disponíveis para solicitações
 -- ============================================
-CREATE TABLE niches (
+CREATE TABLE IF NOT EXISTS niches (
   id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   name        VARCHAR(100)    NOT NULL,
   active      TINYINT(1)      NOT NULL DEFAULT 1,
@@ -81,9 +86,9 @@ CREATE TABLE niches (
 
 -- ============================================
 -- TABELA: requests
--- Solicitações de artigos
+-- Solicitações de artigos (tabela central)
 -- ============================================
-CREATE TABLE requests (
+CREATE TABLE IF NOT EXISTS requests (
   id                 INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   keyword            VARCHAR(300)    NOT NULL,
   domain_id          INT UNSIGNED    NOT NULL COMMENT 'Blog destino',
@@ -102,6 +107,8 @@ CREATE TABLE requests (
   wp_edit_url        VARCHAR(500)    NULL     COMMENT 'URL de edição do WordPress',
   status_compliance  VARCHAR(15)     NULL     COMMENT 'Análise de compliance: nao_analisado, aprovado, reprovado, revisar, falha',
   resumo_analise     TEXT            NULL     COMMENT 'Resumo feito pela análise de compliance',
+  imagem             MEDIUMBLOB      NULL     COMMENT 'Imagem em binário (lazy: só via ?action=image)',
+  imagem_nome        VARCHAR(255)    NULL     COMMENT 'Nome original do arquivo de imagem',
   created_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at         TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -128,7 +135,7 @@ CREATE TABLE requests (
 -- TABELA: request_history
 -- Histórico de alterações de status e logs
 -- ============================================
-CREATE TABLE request_history (
+CREATE TABLE IF NOT EXISTS request_history (
   id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   request_id  INT UNSIGNED    NOT NULL,
   user_id     INT UNSIGNED    NOT NULL COMMENT 'Quem fez a alteração',
@@ -149,10 +156,34 @@ CREATE TABLE request_history (
 
 
 -- ============================================
+-- TABELA: request_pendencies
+-- Pendências/alertas por solicitação
+-- ============================================
+CREATE TABLE IF NOT EXISTS request_pendencies (
+  id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
+  request_id  INT UNSIGNED    NOT NULL COMMENT 'Solicitação',
+  user_id     INT UNSIGNED    NOT NULL COMMENT 'Quem criou',
+  description TEXT            NOT NULL,
+  status      ENUM('unresolved','resolved') NOT NULL DEFAULT 'unresolved',
+  created_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  resolved_at TIMESTAMP       NULL,
+
+  INDEX idx_pendency_request (request_id),
+  INDEX idx_pendency_user    (user_id),
+  INDEX idx_pendency_status  (status),
+
+  CONSTRAINT fk_pendency_request
+    FOREIGN KEY (request_id) REFERENCES requests(id) ON DELETE CASCADE ON UPDATE CASCADE,
+  CONSTRAINT fk_pendency_user
+    FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE ON UPDATE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================
 -- TABELA: notifications
 -- Notificações internas do sistema
 -- ============================================
-CREATE TABLE notifications (
+CREATE TABLE IF NOT EXISTS notifications (
   id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   user_id     INT UNSIGNED    NOT NULL COMMENT 'Destinatário',
   type        VARCHAR(50)     NOT NULL COMMENT 'new_request, status_changed, new_message',
@@ -164,6 +195,7 @@ CREATE TABLE notifications (
   INDEX idx_notif_user    (user_id),
   INDEX idx_notif_read    (is_read),
   INDEX idx_notif_created (created_at),
+  INDEX idx_notif_user_created (user_id, created_at DESC),
 
   CONSTRAINT fk_notif_user
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE
@@ -174,7 +206,7 @@ CREATE TABLE notifications (
 -- TABELA: messages
 -- Mensagens internas entre usuários
 -- ============================================
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
   id          INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   from_id     INT UNSIGNED    NOT NULL COMMENT 'Remetente',
   to_id       INT UNSIGNED    NOT NULL COMMENT 'Destinatário',
@@ -187,6 +219,8 @@ CREATE TABLE messages (
   INDEX idx_msg_to      (to_id),
   INDEX idx_msg_read    (is_read),
   INDEX idx_msg_created (created_at),
+  INDEX idx_msg_from_created (from_id, created_at DESC),
+  INDEX idx_msg_to_created   (to_id, created_at DESC),
 
   CONSTRAINT fk_msg_from
     FOREIGN KEY (from_id) REFERENCES users(id) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -199,7 +233,7 @@ CREATE TABLE messages (
 -- TABELA: user_preferences
 -- Preferências do usuário (tema, sidebar, etc.)
 -- ============================================
-CREATE TABLE user_preferences (
+CREATE TABLE IF NOT EXISTS user_preferences (
   id                INT UNSIGNED    AUTO_INCREMENT PRIMARY KEY,
   user_id           INT UNSIGNED    NOT NULL UNIQUE,
   theme             ENUM('dark','light') NOT NULL DEFAULT 'dark',
@@ -212,10 +246,56 @@ CREATE TABLE user_preferences (
 
 
 -- ============================================
+-- TABELA: compliance_history
+-- Histórico da análise de IA por solicitação
+-- ============================================
+CREATE TABLE IF NOT EXISTS compliance_history (
+    id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    request_id INT UNSIGNED NOT NULL,
+    status_compliance VARCHAR(15) NOT NULL,
+    resumo_analise TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    KEY fk_compliance_history (request_id),
+    CONSTRAINT fk_compliance_history
+        FOREIGN KEY (request_id) REFERENCES requests(id)
+        ON DELETE RESTRICT
+        ON UPDATE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- TABELA: periodic_analysis
+-- Análises periódicas de posts do WP
+-- ============================================
+CREATE TABLE IF NOT EXISTS `periodic_analysis` (
+  `id`                INT UNSIGNED    NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `id_post`           INT             DEFAULT NULL,
+  `post_type`         VARCHAR(20)     DEFAULT NULL,
+  `status_compliance` VARCHAR(20)     NOT NULL,
+  `resumo_analise`    TEXT            NOT NULL,
+  `dominio`           VARCHAR(50)     NOT NULL,
+  `publish_status`    VARCHAR(20)     DEFAULT 'draft' COMMENT 'draft, publish, etc.',
+  `created_at`        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_periodic_dominio (dominio),
+  INDEX idx_periodic_post (id_post),
+  INDEX idx_periodic_status (status_compliance),
+  INDEX idx_periodic_created (created_at),
+  INDEX idx_periodic_dominio_post (dominio, id_post)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS `periodic_analysis_status` (
+  `id`          INT UNSIGNED    NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `dominio`     VARCHAR(50)     NOT NULL,
+  `start_in`    TIMESTAMP       NOT NULL,
+  `finished_in` TIMESTAMP       NOT NULL,
+
+  INDEX idx_periodic_status_dominio (dominio)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================
 -- DADOS INICIAIS: Usuários
--- Senhas usando password_hash() do PHP
--- Por enquanto inseridas em texto limpo
--- (substituir por hash bcrypt ao configurar o backend)
+-- Senhas em texto plano (dev) - trocar por password_hash em prod
 -- ============================================
 INSERT INTO users (id, name, email, password, role, active) VALUES
   (1, 'Admin Sistema',     'admin@hub.com',    'admin123',   'admin',   1),
@@ -226,104 +306,20 @@ INSERT INTO users (id, name, email, password, role, active) VALUES
   (6, 'Juliana Costa',     'juliana@hub.com',  'redator123', 'redator', 1),
   (7, 'Rafael Lima',       'rafael@hub.com',   'redator123', 'redator', 1),
   (8, 'Mariana Santos',    'mariana@hub.com',  'redator123', 'redator', 1),
-  (9, 'Paula Revisor',     'revisor@hub.com',  'revisor123', 'revisor', 1);
+  (9, 'Paula Revisor',     'revisor@hub.com',  'revisor123', 'revisor', 1)
+ON DUPLICATE KEY UPDATE name=VALUES(name);
 
 
 -- ============================================
 -- DADOS INICIAIS: Domínios / Blogs
 -- ============================================
-INSERT INTO domains (id, blog_name, url, niche, color, active) VALUES
-  (1, 'Finanças Plus',  'https://financasplus.com.br',  'Finanças',    '#7f5af0', 1),
-  (2, 'Saúde Total',    'https://saudetotal.com.br',    'Saúde',       '#2cb67d', 1),
-  (3, 'Tech Review BR', 'https://techreviewbr.com.br',  'Tecnologia',  '#39a0ed', 1),
-  (4, 'Mundo Pet',      'https://mundopet.com.br',      'Pets',        '#f0a500', 1),
-  (5, 'Casa & Decor',   'https://casaedecor.com.br',    'Decoração',   '#e53170', 1);
-
-
--- ============================================
--- DADOS INICIAIS: Solicitações
--- ============================================
-INSERT INTO requests (id, keyword, domain_id, writer_id, requested_by_id, status, priority, wordcount, deadline, instructions, created_at) VALUES
-  (1,  'melhores investimentos renda fixa 2026',
-       1, 4, 2, 'in-progress', 'alta', '1800-2500', '2026-02-20',
-       'Focar em CDBs, LCIs e Tesouro Direto. Incluir comparativo de rentabilidade. Tom educativo e acessível. CTA para calculadora de investimentos.',
-       '2026-02-10 10:00:00'),
-
-  (2,  'como emagrecer com saúde em 2026',
-       2, 5, 2, 'pending', 'alta', '1200-1800', '2026-02-22',
-       'Abordar dieta e exercício. Evitar promessas milagrosas. Citar fontes médicas confiáveis.',
-       '2026-02-12 10:00:00'),
-
-  (3,  'iphone 17 review completo',
-       3, 6, 3, 'review', 'media', '1200-1800', '2026-02-18',
-       'Review hands-on. Incluir benchmarks, comparativos com concorrentes e fotos.',
-       '2026-02-08 10:00:00'),
-
-  (4,  'ração natural para cachorro',
-       4, 7, 2, 'done', 'baixa', '800-1200', '2026-02-15',
-       'Listar prós e contras da alimentação natural. Incluir receitas simples.',
-       '2026-02-05 10:00:00'),
-
-  (5,  'tendências decoração sala 2026',
-       5, 8, 3, 'in-progress', 'media', '1200-1800', '2026-02-25',
-       'Mostrar tendências minimalistas e maximalistas.',
-       '2026-02-11 10:00:00'),
-
-  (6,  'cartão de crédito sem anuidade',
-       1, 4, 2, 'done', 'alta', '1800-2500', '2026-02-14',
-       'Comparar os 10 melhores cartões sem anuidade. Usar tabela comparativa.',
-       '2026-02-03 10:00:00'),
-
-  (7,  'suplementos para ganho muscular',
-       2, 5, 3, 'pending', 'media', '800-1200', '2026-02-28',
-       'Whey, creatina, BCAA. Incluir dosagens e contraindicações.',
-       '2026-02-14 10:00:00'),
-
-  (8,  'melhor notebook custo benefício',
-       3, 6, 2, 'done', 'baixa', '1200-1800', '2026-02-12',
-       'Top 8 notebooks até R$4.000. Incluir specs e links de compra.',
-       '2026-02-01 10:00:00'),
-
-  (9,  'como adestrar filhote de gato',
-       4, 8, 3, 'pending', 'baixa', '500-800', '2026-03-01',
-       'Dicas práticas para donos de primeira viagem.',
-       '2026-02-13 10:00:00'),
-
-  (10, 'como montar home office pequeno',
-       5, 7, 2, 'review', 'media', '800-1200', '2026-02-19',
-       'Soluções para espaços de até 6m².',
-       '2026-02-09 10:00:00');
-
-
--- ============================================
--- DADOS INICIAIS: Histórico das solicitações
--- ============================================
-INSERT INTO request_history (request_id, user_id, action, changes, created_at) VALUES
-  (1,  2, 'create', NULL, '2026-02-10 10:00:00'),
-  (2,  2, 'create', NULL, '2026-02-12 10:00:00'),
-  (3,  3, 'create', NULL, '2026-02-08 10:00:00'),
-  (4,  2, 'create', NULL, '2026-02-05 10:00:00'),
-  (5,  3, 'create', NULL, '2026-02-11 10:00:00'),
-  (6,  2, 'create', NULL, '2026-02-03 10:00:00'),
-  (7,  3, 'create', NULL, '2026-02-14 10:00:00'),
-  (8,  2, 'create', NULL, '2026-02-01 10:00:00'),
-  (9,  3, 'create', NULL, '2026-02-13 10:00:00'),
-  (10, 2, 'create', NULL, '2026-02-09 10:00:00');
-
-
--- ============================================
--- DADOS INICIAIS: Preferências (todos com padrão)
--- ============================================
-INSERT INTO user_preferences (user_id, theme, sidebar_collapsed) VALUES
-  (1, 'dark', 0),
-  (2, 'dark', 0),
-  (3, 'dark', 0),
-  (4, 'dark', 0),
-  (5, 'dark', 0),
-  (6, 'dark', 0),
-  (7, 'dark', 0),
-  (8, 'dark', 0),
-  (9, 'dark', 0);
+INSERT INTO domains (id, blog_name, url, niche, color, language, bloco_anuncio, active, automacao_imagem) VALUES
+  (1, 'Finanças Plus',  'https://financasplus.com.br',  'Finanças',    '#7f5af0', 'pt-br', '', 1, 0),
+  (2, 'Saúde Total',    'https://saudetotal.com.br',    'Saúde',       '#2cb67d', 'pt-br', '', 1, 0),
+  (3, 'Tech Review BR', 'https://techreviewbr.com.br',  'Tecnologia',  '#39a0ed', 'pt-br', '', 1, 0),
+  (4, 'Mundo Pet',      'https://mundopet.com.br',      'Pets',        '#f0a500', 'pt-br', '', 1, 0),
+  (5, 'Casa & Decor',   'https://casaedecor.com.br',    'Decoração',   '#e53170', 'pt-br', '', 1, 0)
+ON DUPLICATE KEY UPDATE blog_name=VALUES(blog_name);
 
 
 -- ============================================
@@ -332,7 +328,8 @@ INSERT INTO user_preferences (user_id, theme, sidebar_collapsed) VALUES
 INSERT INTO languages (id, name, code, active) VALUES
   (1, 'Português (BR)', 'pt-br', 1),
   (2, 'Inglês',         'en',    1),
-  (3, 'Espanhol',       'es',    1);
+  (3, 'Espanhol',       'es',    1)
+ON DUPLICATE KEY UPDATE name=VALUES(name);
 
 
 -- ============================================
@@ -348,39 +345,74 @@ INSERT INTO niches (id, name, active) VALUES
   (7, 'Educação',    1),
   (8, 'Moda',        1),
   (9, 'Viagens',     1),
-  (10, 'Gastronomia', 1);
+  (10, 'Gastronomia', 1)
+ON DUPLICATE KEY UPDATE name=VALUES(name);
 
 
 -- ============================================
--- TABELA: compliance_history
--- Historico da analise de ia
+-- DADOS INICIAIS: Solicitações (seed mínimo)
 -- ============================================
-CREATE TABLE compliance_history (
-    id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    request_id INT UNSIGNED NOT NULL,
-    status_compliance VARCHAR(15) NOT NULL,
-    resumo_analise TEXT NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    KEY fk_compliance_history (request_id),
-    CONSTRAINT fk_compliance_history
-        FOREIGN KEY (request_id) REFERENCES requests(id)
-        ON DELETE RESTRICT
-        ON UPDATE RESTRICT
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT INTO requests (id, keyword, domain_id, writer_id, requested_by_id, status, priority, wordcount, deadline, instructions, created_at) VALUES
+  (1,  'melhores investimentos renda fixa 2026',        1, 4, 2, 'in-progress', 'alta', '1800-2500', '2026-02-20', 'Focar em CDBs, LCIs e Tesouro Direto.', '2026-02-10 10:00:00'),
+  (2,  'como emagrecer com saúde em 2026',              2, 5, 2, 'pending', 'alta', '1200-1800', '2026-02-22', 'Abordar dieta e exercício.', '2026-02-12 10:00:00'),
+  (3,  'iphone 17 review completo',                     3, 6, 3, 'review', 'media', '1200-1800', '2026-02-18', 'Review hands-on.', '2026-02-08 10:00:00'),
+  (4,  'ração natural para cachorro',                   4, 7, 2, 'done', 'baixa', '800-1200', '2026-02-15', 'Listar prós e contras.', '2026-02-05 10:00:00'),
+  (5,  'tendências decoração sala 2026',                5, 8, 3, 'in-progress', 'media', '1200-1800', '2026-02-25', 'Mostrar tendências.', '2026-02-11 10:00:00'),
+  (6,  'cartão de crédito sem anuidade',                1, 4, 2, 'done', 'alta', '1800-2500', '2026-02-14', 'Comparar os 10 melhores.', '2026-02-03 10:00:00'),
+  (7,  'suplementos para ganho muscular',               2, 5, 3, 'pending', 'media', '800-1200', '2026-02-28', 'Whey, creatina.', '2026-02-14 10:00:00'),
+  (8,  'melhor notebook custo benefício',               3, 6, 2, 'done', 'baixa', '1200-1800', '2026-02-12', 'Top 8 notebooks.', '2026-02-01 10:00:00'),
+  (9,  'como adestrar filhote de gato',                 4, 8, 3, 'pending', 'baixa', '500-800', '2026-03-01', 'Dicas práticas.', '2026-02-13 10:00:00'),
+  (10, 'como montar home office pequeno',               5, 7, 2, 'review', 'media', '800-1200', '2026-02-19', 'Soluções para 6m².', '2026-02-09 10:00:00')
+ON DUPLICATE KEY UPDATE keyword=VALUES(keyword);
 
-CREATE TABLE `periodic_analysis` (
-  `id` int UNSIGNED NOT NULL,
-  `id_post` int DEFAULT NULL,
-  `post_type` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci DEFAULT NULL,
-  `status_compliance` varchar(20) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `resumo_analise` text COLLATE utf8mb4_unicode_ci NOT NULL,
-  `dominio` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE `periodic_analysis_status` (
-  `id` int UNSIGNED NOT NULL,
-  `dominio` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `start_in` timestamp NOT NULL,
-  `finished_in` timestamp NOT NULL
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- ============================================
+-- DADOS INICIAIS: Histórico das solicitações
+-- ============================================
+INSERT INTO request_history (request_id, user_id, action, changes, created_at) VALUES
+  (1,  2, 'create', NULL, '2026-02-10 10:00:00'),
+  (2,  2, 'create', NULL, '2026-02-12 10:00:00'),
+  (3,  3, 'create', NULL, '2026-02-08 10:00:00'),
+  (4,  2, 'create', NULL, '2026-02-05 10:00:00'),
+  (5,  3, 'create', NULL, '2026-02-11 10:00:00'),
+  (6,  2, 'create', NULL, '2026-02-03 10:00:00'),
+  (7,  3, 'create', NULL, '2026-02-14 10:00:00'),
+  (8,  2, 'create', NULL, '2026-02-01 10:00:00'),
+  (9,  3, 'create', NULL, '2026-02-13 10:00:00'),
+  (10, 2, 'create', NULL, '2026-02-09 10:00:00')
+ON DUPLICATE KEY UPDATE action=VALUES(action);
+
+
+-- ============================================
+-- DADOS INICIAIS: Preferências
+-- ============================================
+INSERT INTO user_preferences (user_id, theme, sidebar_collapsed) VALUES
+  (1, 'dark', 0),
+  (2, 'dark', 0),
+  (3, 'dark', 0),
+  (4, 'dark', 0),
+  (5, 'dark', 0),
+  (6, 'dark', 0),
+  (7, 'dark', 0),
+  (8, 'dark', 0),
+  (9, 'dark', 0)
+ON DUPLICATE KEY UPDATE theme=VALUES(theme);
+
+
+-- ============================================
+-- MIGRAÇÃO: Colunas adicionadas após 2026-02
+-- Para bancos já existentes, execute manualmente (ignore erro se já existir)
+-- ============================================
+-- domains.automacao_imagem (BOOLEAN para automação de imagem - admin only)
+-- ALTER TABLE domains ADD COLUMN automacao_imagem TINYINT(1) NOT NULL DEFAULT 0;
+
+-- requests.imagem + imagem_nome (lazy load via ?action=image)
+-- ALTER TABLE requests ADD COLUMN imagem MEDIUMBLOB NULL COMMENT 'Imagem binária';
+-- ALTER TABLE requests ADD COLUMN imagem_nome VARCHAR(255) NULL COMMENT 'Nome original do arquivo';
+
+-- periodic_analysis.publish_status (pode não existir em dumps antigos)
+-- ALTER TABLE periodic_analysis ADD COLUMN publish_status VARCHAR(20) DEFAULT 'draft';
+
+-- Índices para performance (lazy load) - execute se ainda não existirem
+-- CREATE INDEX idx_periodic_dominio ON periodic_analysis (dominio);
+-- CREATE INDEX idx_periodic_status ON periodic_analysis (status_compliance);

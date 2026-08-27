@@ -1,14 +1,15 @@
 # ArticleHub — Arquitetura do Sistema
 
-> **Objetivo**: Documento de referência rápida para orientar humanos e IAs sobre a estrutura completa do sistema. Leia este arquivo ANTES de explorar o código.
+> **Objetivo**: Documento de referência rápida para humanos e IAs sobre a estrutura completa do sistema. Leia este arquivo ANTES de explorar o código.
+> **Atualizado**: 2026-08-27 — reflete lazy load, imagem BLOB, automacao_imagem, request_pendencies e paginação periódica.
 
 ---
 
 ## Visão Geral
 
-ArticleHub é um sistema de gestão de solicitações de artigos para blogs/sites. Gestores criam pedidos de artigos, redatores os produzem, revisores validam e o conteúdo é publicado via WordPress.
+ArticleHub é um sistema de gestão de solicitações de artigos para blogs/sites. Gestores criam pedidos, redatores produzem, revisores validam e o conteúdo é publicado via WordPress.
 
-**Stack**: PHP puro (API REST) + JavaScript Vanilla (SPA) + MySQL + Docker
+**Stack**: PHP puro (API REST) + JavaScript Vanilla (SPA) + MySQL 8.0 + Docker + Traefik
 
 ---
 
@@ -16,25 +17,31 @@ ArticleHub é um sistema de gestão de solicitações de artigos para blogs/site
 
 ```
 articlehub/
-├── index.html          # SPA — todo o HTML (login, views, modais) (~920 linhas)
-├── app.js              # Toda lógica frontend em IIFE (~1850 linhas)
-├── style.css           # CSS completo com dark/light themes (~2200 linhas)
-├── api/                # Backend PHP — cada arquivo = um endpoint REST
-│   ├── config.php      # Conexão MySQL, helpers (jsonResponse, requireAuth, requireRole)
-│   ├── auth.php        # Login/logout/check (sessão PHP)
-│   ├── requests.php    # CRUD de solicitações + status + publish (~390 linhas, mais complexo)
-│   ├── users.php       # CRUD de usuários (~160 linhas)
-│   ├── domains.php     # CRUD de domínios/blogs
-│   ├── languages.php   # CRUD de idiomas
-│   ├── niches.php      # CRUD de nichos
-│   ├── messages.php    # Sistema de mensagens internas
-│   ├── notifications.php # Notificações (leitura e marcar como lido)
-│   └── preferences.php # Preferências do usuário (tema, notificações)
+├── index.html          # SPA — HTML (login, 10 views, 14 modais) (~1186 linhas)
+├── app.js              # Lógica frontend IIFE (~3400 linhas, lazy load)
+├── style.css           # CSS com dark/light, glassmorphism (~2529 linhas)
+├── api/                # Backend PHP — cada arquivo = endpoint REST
+│   ├── config.php      # PDO singleton, helpers (jsonResponse, requireAuth, requireRole, checkDuplicate)
+│   ├── auth.php        # login/logout/check (sessão + preferences)
+│   ├── requests.php    # CRUD + status + publish + image/history/detail/clear_image (~700 linhas, mais complexo)
+│   ├── users.php       # CRUD usuários
+│   ├── domains.php     # CRUD domínios + automacao_imagem (checkbox admin)
+│   ├── languages.php   # CRUD idiomas
+│   ├── niches.php      # CRUD nichos
+│   ├── pendencies.php  # Pendências por request (unresolved/resolved)
+│   ├── messages.php    # Mensagens internas
+│   ├── notifications.php # Notificações (LIMIT 50)
+│   ├── logs.php        # Logs de request_history por data
+│   ├── compliance.php  # Histórico compliance por request
+│   ├── periodic_analysis.php # Periódica com paginação LIMIT/OFFSET + distinct + history
+│   └── preferences.php # PUT tema (GET é via auth.php)
 ├── database/
-│   └── schema.sql      # Schema completo + seed data (~350 linhas)
-├── Dockerfile          # Imagem PHP/Apache
-├── docker-compose.yml  # APP + MySQL
-└── test_db.php         # Teste de conexão com o banco
+│   └── schema.sql      # Schema completo + seed + índices lazy (~500 linhas)
+├── Dockerfile          # php:8.2-apache, pdo_mysql, intl
+├── docker-compose.yml  # Prod: ghcr.io/daniel-vitorelli/articlehub:latest (Traefik)
+├── docker-compose.dev.yml # Dev: build . → ahteste.ai-equinox.com
+├── docker-compose.local.yml # Local: db mysql:8.0 + app 8080
+└── .github/workflows/docker-image.yml # CI/CD → ghcr.io + Portainer webhook
 ```
 
 ---
@@ -45,43 +52,47 @@ articlehub/
 
 | Tabela | Colunas-chave | Observações |
 |--------|--------------|-------------|
-| `users` | id, name, email, password, **role**, active | Senhas em texto plano (dev) |
-| `domains` | id, blog_name, url, color, active | Blogs/sites destino |
-| `requests` | id, keyword, domain_id, writer_id, requested_by_id, **status**, priority, wordcount, deadline, instructions, language, purpose, content_type, niche_id, published_url, **wp_edit_url** | Tabela central |
-| `request_history` | id, request_id, user_id, action, changes (JSON), url | Log de todas as alterações |
-| `notifications` | id, user_id, type, message, related_id, is_read | Sistema de notificações |
-| `messages` | id, sender_id, recipient_id, subject, body, is_read | Mensagens internas |
-| `languages` | id, name, code, active | Idiomas disponíveis |
-| `niches` | id, name, active | Categorias/nichos |
-| `user_preferences` | user_id, theme, email_notifications | Preferências individuais |
+| `users` | id, name, email, password, **role**, active | 4 roles, senha texto plano dev |
+| `domains` | id, blog_name, url, color, niche, language, bloco_anuncio, **automacao_imagem TINYINT(1)**, active | `automacao_imagem` = checkbox admin em Domínios |
+| `requests` | id, keyword, domain_id, writer_id, requested_by_id, **status**, priority, wordcount, deadline, **instructions TEXT**, language, purpose, content_type, niche_id, published_url, **wp_edit_url**, **status_compliance**, **resumo_analise TEXT**, **imagem MEDIUMBLOB**, **imagem_nome VARCHAR(255)** | Central. `imagem` lazy via `has_imagem` flag + `?action=image` |
+| `request_history` | id, request_id, user_id, action, changes JSON, url | Log status/edit/published |
+| `request_pendencies` | id, request_id, user_id, description TEXT, status ENUM(unresolved/resolved), created_at, resolved_at | Pendências por request |
+| `notifications` | id, user_id, type, message, related_id, is_read | `LIMIT 50` + índice `(user_id, created_at)` |
+| `messages` | id, from_id, to_id, subject, body TEXT, is_read | Índices `(from_id, created_at)` |
+| `languages` | id, name, code, active | `pt-br, en, es` |
+| `niches` | id, name, active | 10 seeds |
+| `user_preferences` | user_id, theme, sidebar_collapsed | Dark/light |
+| `compliance_history` | id, request_id, status_compliance, resumo_analise TEXT | Histórico IA |
+| `periodic_analysis` | id, id_post, post_type, status_compliance, resumo_analise TEXT, dominio, publish_status, created_at | Sem PK antiga corrigida para `AUTO_INCREMENT`, índices `dominio, status` |
+| `periodic_analysis_status` | id, dominio, start_in, finished_in | Controle crawler |
 
 ### Roles (ENUM)
 
 | Role | Descrição | Permissões |
 |------|-----------|------------|
-| `admin` | Administrador | Tudo: gerenciar usuários, domínios, idiomas, nichos; ver todos os pedidos |
-| `gestor` | Gestor de Tráfego | Criar pedidos, ver seus próprios pedidos, atribuir redatores |
-| `revisor` | Revisor | Ver **todos** os pedidos, editar, alterar status, marcar como "revisado"; **sem** acesso à administração |
-| `redator` | Redator | Ver pedidos atribuídos, alterar status dos seus pedidos |
+| `admin` | Administrador | Tudo + automacao_imagem checkbox, hard delete lixeira |
+| `gestor` | Gestor de Tráfego | Criar, ver seus, editar seus, soft delete pending |
+| `revisor` | Revisor | Ver todos, editar, status, revisado; sem admin |
+| `redator` | Redator | Ver atribuídos + criados, status, pendências |
 
 ### Fluxo de Status (ENUM)
 
 ```
 pending → in-progress → review → done → published → revisado
   │          │            │        │        │           │
-  │          │            │        │        │           └─ Apenas admin/revisor
-  │          │            │        │        └─ Requer published_url (validada por domínio)
-  │          │            │        └─ Requer wp_edit_url (validada por domínio)
-  │          │            └─ Em revisão editorial
-  │          └─ Redator em produção
-  └─ Aguardando início
+  │          │            │        │        │           └─ Apenas admin/revisor, final
+  │          │            │        │        └─ Requer published_url + compliance aprovado, limpa imagem/imagem_nome
+  │          │            │        └─ Requer wp_edit_url (modal #modalDone) + hostname check
+  │          │            └─ Em revisão
+  │          └─ Em produção
+  └─ Pendente (soft delete só aqui)
 ```
 
-**Regras de transição**:
-- `done` → exige `wp_edit_url` (modal `#modalDone`)
-- `published` → exige `published_url` (modal `#modalPublish`), só a partir de `done`
-- `revisado` → só a partir de `published`, apenas admin/revisor
-- `revisado` → status final, não pode ser alterado
+**Regras**:
+- `done` exige `wp_edit_url` validada vs `domains.url` hostname
+- `published` exige `done` + `compliance aprovado` + `published_url` validada
+- `revisado` só de `published`, só admin/revisor, final
+- `published` limpa `imagem, imagem_nome` (libera BLOB)
 
 ---
 
@@ -89,234 +100,197 @@ pending → in-progress → review → done → published → revisado
 
 ### Padrão de cada endpoint
 
-Todos os arquivos em `api/` seguem o mesmo padrão:
 1. `require_once 'config.php'`
-2. Switch por `$_SERVER['REQUEST_METHOD']` (GET/POST/PUT/DELETE)
-3. Cada case chama uma função específica
-4. Funções usam `requireAuth()` ou `requireRole('admin', ...)` para controle de acesso
-5. Resposta sempre via `jsonResponse($statusCode, $data)`
+2. `switch ($_SERVER['REQUEST_METHOD'])` (GET/POST/PUT/DELETE)
+3. `requireAuth()` / `requireRole('admin')`
+4. `jsonResponse($code, $data)`
 
-### Arquivo mais complexo: `api/requests.php`
-
-| Função | Linhas | Descrição |
-|--------|--------|-----------|
-| `listRequests()` | 35–95 | Filtra por role: admin/revisor vêem tudo; gestor vê os seus; redator vê atribuídos |
-| `createRequest()` | 97–154 | Qualquer autenticado pode criar |
-| `updateRequest()` | 156–217 | Editar campos (admin, revisor, ou gestor dono) |
-| `updateStatus()` | 219–317 | **Mais complexo**: validações, transição `done` salva `wp_edit_url`, histórico, notificações |
-| `publishRequest()` | 319–376 | Valida URL, verifica domínio, atualiza status e `published_url` |
-| `deleteRequest()` | 378–391 | Admin only |
-
-### `api/config.php` — Helpers globais
+### `api/config.php` — Helpers
 
 | Função | Descrição |
 |--------|-----------|
-| `getDB()` | Singleton PDO (MySQL) |
-| `jsonResponse($code, $data)` | Resposta JSON + exit |
-| `getInput()` | Parse JSON do body |
-| `requireAuth()` | Retorna `$_SESSION['user']` ou 401 |
-| `requireRole(...$roles)` | Verifica role ou 403 |
-| `normalizeStr($str)` | Remove acentos para comparação |
-| `checkDuplicate(...)` | Verifica duplicatas (case/accent insensitive) |
+| `getDB()` | Singleton PDO `mysql:host ...;charset=utf8mb4` |
+| `jsonResponse()` | JSON + exit |
+| `getInput()` | `php://input` JSON |
+| `requireAuth()` | 401 se sem `$_SESSION['user']` |
+| `requireRole(...$roles)` | 403 se role não permitida |
+| `getAction()` | `$_GET['action']` |
+| `normalizeStr()` / `checkDuplicate()` | Duplicatas accent/case insensitive (full scan) |
+
+### `api/requests.php` — Mais complexo
+
+| Função | Descrição | Lazy |
+|--------|-----------|------|
+| `getRequestPublicFields()` | Lista explícita leve: sem `imagem` BLOB, sem `instructions`/`resumo_analise` TEXT; retorna `has_imagem` `(IS NOT NULL)`, `has_resumo` e `imagem_nome` | ✅ |
+| `getHistoryPublicFields()` | `rh.id, request_id, user_id, action, changes, url, created_at` | — |
+| `getRequestInternalFields()` | Campos para validação interna (com `instructions`, `resumo_analise`, `imagem_nome` mas sem BLOB) | — |
+| `listRequests()` | Filtra por role (admin/revisor tudo; gestor `requested_by_id`; redator `writer_id OR requested_by_id`), `LEFT JOIN domains/users` + subquery `unresolved_pendencies_count`, `ORDER BY FIELD(status)` | Sem `history` (foi N+1 removido) |
+| `listDeletedRequests()` | `status=deleted`, admin vê tudo, outros só seus | — |
+| `getRequestHistory()` | `GET ?action=history&id=` — lazy só ao abrir detalhe, decodifica `changes` JSON | ✅ |
+| `getRequestDetail()` | `GET ?action=detail&id=` — lazy com `instructions`+`resumo_analise` + joins + `has_imagem` | ✅ |
+| `getRequestImage()` | `GET ?action=image&id=` — só BLOB quando clica `🖼️`, detecta MIME via `finfo`, suporta `data:image` ou base64, retorna `{image:b64,mime,filename:imagem_nome}` | ✅ |
+| `clearImage()` | `PUT ?action=clear_image` — `SET imagem=NULL, imagem_nome=NULL` + history, permissão admin/revisor/redator ou dono | ✅ |
+| `createRequest()` | `POST` — cria + history `create` + notificação writer | — |
+| `updateRequest()` | `PUT` — diff `fieldMap` + history `edit` | — |
+| `updateStatus()` | `PUT ?action=status` — valida transições, `wp_edit_url` hostname, `status_compliance=nao_analisado` | — |
+| `publishRequest()` | `PUT ?action=publish` — valida `done` + `aprovado` + `url` hostname, `SET status=published, published_url, imagem=NULL, imagem_nome=NULL` | Limpa BLOB |
+| `deleteRequest()` | `DELETE ?id&force=0/1` — soft `deleted` ou hard (admin `force=1`) | — |
+| `restoreRequest()` | `PUT ?action=restore` — de `deleted` para `pending` | — |
+| `resetCompliance()` | `PUT ?action=reset_compliance` — `nao_analisado, resumo=NULL` | — |
+
+### Outros endpoints
+
+| Arquivo | Método | Descrição | Lazy |
+|---------|--------|-----------|------|
+| `domains.php` | GET/POST/PUT/DELETE | `listDomains` normaliza `automacao_imagem 0/1`; `create/update` aceita `automacao_imagem` (fallback se coluna não existe) | `SELECT *` ainda, mas com normalização |
+| `languages.php` | GET/POST/PUT/DELETE | CRUD | — |
+| `niches.php` | GET/POST/PUT/DELETE | CRUD | — |
+| `pendencies.php` | GET `?request_id` / POST / PUT `update_status` | `p.*, u.name` | Lazy por modal `openPendenciesModal` |
+| `messages.php` | GET `?tab=inbox/sent` | `m.*, u.name` sem LIMIT (poderia paginar) | Lazy só em `navigateTo(messages)` |
+| `notifications.php` | GET | `WHERE user_id ORDER BY created_at DESC LIMIT 50` | ✅ |
+| `logs.php` | GET `?date=&user_id=` | `rh.*` sem LIMIT, `DATE()` mata índice | Poderia `LIMIT 100` |
+| `compliance.php` | GET `?request_id` | `ch.id, status, resumo` | Lazy em `toggleComplianceHistory` |
+| `periodic_analysis.php` | GET `?limit&offset&status&post_type&dominio` / `?distinct=dominio/post_type` / `?history=1&dominio&id_post` | Agrupado `MAX(id) GROUP BY dominio,id_post` paginado, total `COUNT(*)` | ✅ Infinite scroll |
+| `preferences.php` | PUT | `theme` toggle (GET morto, via `auth.php`) | — |
+| `auth.php` | POST login/logout, GET check | Retorna `preferences` junto | — |
 
 ---
 
-## Frontend (JavaScript — `app.js`)
+## Frontend (JavaScript — `app.js` ~3400 linhas)
 
 ### Arquitetura
 
-O arquivo usa uma IIFE `(function() { ... })()` com escopo fechado. **Não há módulos/imports**.
+IIFE `(function(){"use strict";})()` sem modules. Estado global + helpers + fetch + views + modais + `bindEvents` + `init` em `DOMContentLoaded`. `API="api"`, `POLL_INTERVAL_MS=15000`, `PERIODIC_PAGE_SIZE=50`, `APP_VERSION`.
 
-### Estado Global (variáveis no topo)
+### Estado Global
 
 ```javascript
-let users, requests, domains, languages, niches, notifications, messages = [];
-let currentUser = null;      // Objeto do usuário logado
-let currentMsgTab = 'inbox'; // Tab ativa de mensagens
-let pollInterval = null;     // ID do setInterval para auto-refresh (15s)
+let users, requests, deletedRequests, domains, languages, niches, notifications, messages = [];
+let currentUser, currentMsgTab='inbox', pollInterval, complianceHistoryProvider;
+let currentImageData = {id,mime,b64,filename} // só enquanto modal imagem aberto
+let periodicAnalysisGroups, periodicAnalysisVisible, periodicAnalysisLoaded, periodicAnalysisTotal, periodicSentinelObserver;
 ```
 
-### Funções Organizadas por Seção
+### Helpers
 
-#### Helpers (L24–83)
-`$()`, `$$()`, `escapeHtml()`, `formatDate()`, `formatDateTime()`, `statusLabel()`, `priorityLabel()`, `roleLabel()`, `getInitials()`, `today()`, `fieldLabel()`
+`$`, `$$`, `escapeHtml`, `escapeAttr`, `formatDate`, `formatDateTime` (America/Sao_Paulo), `statusLabel`, `priorityLabel`, `roleLabel`, `getInitials`, `today`, `fieldLabel`, `statusBadge`, `complianceStatusLabel`, `publishStatusBadge`, `periodicPostLink`
 
-#### API Fetch (L85–127)
-`apiGet()`, `apiPost()`, `apiPut()`, `apiDelete()` — wrappers de `fetch()` com tratamento de erro
+### API Fetch
 
-#### Data Loading (L129–149)
-`loadAll()` — carrega users, requests, domains, languages, niches, notifications, messages em paralelo via `Promise.all`
+`apiGet/Post/Put/Delete` — `fetch` com `credentials:"include"`, `Content-Type: application/json`, throw `err.error`.
 
-#### Permissões (L151–179)
-| Função | Regra |
-|--------|-------|
-| `is(role)` | Verifica role do `currentUser` |
-| `canCreate()` | Qualquer autenticado |
-| `canDelete()` | Admin only |
-| `canManageUsers()` | Admin only |
-| `canManageDomains()` | Admin only |
-| `canChangeStatus(r)` | Admin, redator, revisor, ou dono do pedido |
-| `canEdit(r)` | Admin, revisor, ou gestor dono |
-| `canSeeRevisado()` | Admin ou revisor |
+### Data Loading (lazy, sem mudar visual)
 
-#### Login/Logout (L181–267)
-`initLogin()`, `showLogin()`, `showApp()`, `handleLogin()`, `handleLogout()`, `startPolling()`, `stopPolling()`
+- `loadAll()` — só essencial `requests.php + notifications.php` (2 fetches) + `loadDeferred()` em background para `domains/languages/niches/users/deleted` (não bloqueia dashboard). Antes era 7 paralelos bloqueantes.
+- `loadDeferred()` — `deferredLoading` singleton, `Promise.all` só do que ainda `length===0`.
+- `ensureViewData(view)` — `await` antes de `render` se view precisa de `domains/users/etc` ainda não carregados.
+- Polling `startPolling()` — `setInterval 15s` com `if(document.hidden) return` (pausa em aba oculta), fetcha `notifications + requests` leves (sem history).
 
-#### Role UI & Navigation (L276–328)
-- `applyRoleUI()` — aplica classes CSS por role, toggle `.admin-only`, `.gestor-admin-only`, `.gestor-col`
-- `navigateTo(viewName, options)` — SPA navigation; restringe views admin para não-admins
+### Permissões
 
-#### Dashboard (L330–389)
-`renderDashboard()` — stat cards + tabela dos últimos pedidos; card "Revisados" visível apenas admin/revisor
+`is(role)`, `canCreate()`, `canDelete()`, `canManageUsers/Domains()`, `canChangeStatus(r)`, `canEdit(r)`, `canManagePendency(r)`, `canSeeRevisado()`, `getVisibleRequests()` (já filtrado server-side)
 
-#### Requests View (L391–512)
-`populateRequestFilters()`, `renderRequests()` — tabela com filtros (status, prioridade, blog, redator, gestor)
+### Login/Logout
 
-#### CRUD Views — Admin (L514–569)
-`renderUsers()`, `renderDomains()`, `renderLanguages()` (L1324+), `renderNiches()` (L1408+)
+`initLogin()` → `apiGet("auth.php?action=check")` + `applyThemeFromPrefs`, `showApp()` → `loadAll()` → `navigateTo("dashboard")` → `startPolling()`, `handleLogin()` `apiPost("auth.php?action=login")`, `handleLogout()` `apiPost("auth.php?action=logout")`
 
-#### Modais (L571–762)
-- `openModal()`, `closeModal()`, `closeAllModals()`
-- `openNewRequest()`, `submitRequest()`
-- `openEditRequest()`, `fillEditForm()`, `submitEditRequest()`
+### Role UI & Navigation
 
-#### **Detail Modal — `openDetail(id)` (L764–904)**
-> **Função mais complexa do frontend**. Monta HTML completo com:
-> - Info do pedido (keyword, blog, redator, prioridade, deadline, etc.)
-> - Link WP Edit (`wp_edit_url`) para status `done`/`revisado`/`published`
-> - Link Publicado (`published_url`) para status `published`
-> - Fluxo de status (steps clicáveis — `revisado` só para admin/revisor)
-> - Histórico de alterações (`buildHistoryHtml`)
-> - Botão editar (se permitido)
+`applyRoleUI()` toggle `.admin-only`, `navigateTo(view,opts)` agora `async` + `await ensureViewData(view)` antes de `render*` (sem trocar layout, só evita tabela vazia), `capitalize()`
 
-#### Status Change (L960–1155)
-- `updateRequestStatus()` — chamada genérica à API
-- `openPublishModal()` / `submitPublish()` — validação e publicação com URL
-- `openDoneModal()` / `submitDone()` — validação e conclusão com WP Edit URL
+### Views
 
-#### User/Domain CRUD (L1157–1301)
-`openNewUser()`, `openEditUser()`, `submitUser()`, `deleteUser()`, `openNewDomain()`, etc.
+| View | Função | Lazy |
+|------|--------|------|
+| Dashboard | `renderDashboard()` — 6 stats + `slice(0,5)` recentes, `has_resumo` via `has_resumo` flag | Stats varrem `requests` em memória |
+| Requests | `renderRequests()` — `populateRequestFilters()` + filtros `status/priority/blog/writer/requester/search` + sort `statusOrder`+`deadline`, 10 cols (inclui `Imagem` `has_imagem` `🖼️/—` e `has_resumo`), `colspan 10` | Filtros client, mas `has_resumo` flag evita TEXT |
+| Trash | `renderTrash()` — `deletedRequests` | Lazy `deleted` |
+| Users/Domains/Languages/Niches | `renderUsers/Domains/Languages/Niches()` — `map` full | `Domains` com checkbox `automacao_imagem` `data-automacao-id` `PUT domains.php` admin only |
+| Logs | `renderLogs()` — `apiGet(logs.php?date=&user_id)` | Sem LIMIT |
+| Compliance Periodic | `renderComplianceAnalysis()` + `fetchNextPeriodicPage()` + `renderPeriodicChunk()` — `IntersectionObserver 300px` sentinel, `LIMIT/OFFSET` backend, `distinct` para filtros | ✅ Backend paginado, history via `?history=1` |
+| Messages | `renderMessages()` — `apiGet(messages.php?tab=)` | Lazy só em view |
+| Detail Modal | `openDetail(id)` `async` — lazy `detail` (`instructions`, `resumo_analise`) + lazy `history` (`?action=history`) com placeholder spinner, `Object.assign(r,detail)` cache | ✅ |
+| Compliance Modal | `openComplianceModal(id,opts)` `async` — lazy `detail` se `has_resumo` mas sem texto, `toggleComplianceHistory` → `compliance.php` | ✅ |
+| Image Modal | `openImageModal(id)` `async` — `apiGet(?action=image)` → `data:mime;base64`, `object-fit:contain`, `downloadCurrentImage()` com `imagem_nome` ou `solicitacao-{id}.ext`, `deleteCurrentImage()` → `PUT ?action=clear_image` | ✅ |
+| Periodic Focus | `periodicBodyEl` click `tr.is-focused` + `document` click fora/modal → `is-focused` `box-shadow inset 3px` `style.css` | Visual |
 
-#### Theme (L1303–1322)
-`applyThemeFromPrefs()`, `toggleTheme()` — dark/light toggle salvo via API
+### Modais
 
-#### Notifications (L1490–1559)
-`updateNotifBadge()`, `renderNotifDropdown()`, `toggleNotifDropdown()`, `markAllNotifsRead()`
+`openModal/closeModal/closeAllModals` (`body overflow hidden`, `clearImageModal` se `modalImage`), 14 modais: `modalDetail`, `modalNew/Edit`, `modalPublish/Done`, `modalUser/Domain/Language/Niche`, `modalCompose/MsgDetail`, `modalCompliance/ComplianceDetail`, `modalPendencies`, `modalImage` (com `imageLoader`, `modalImageEl` `max-height 75vh` `object-fit:contain`, `btnDownloadImage`, `btnDeleteImage`)
 
-#### Messages (L1561–1692)
-`updateMsgBadge()`, `renderMessages()`, `openMsgDetail()`, `openCompose()`, `sendMessage()`
+### CRUD Admin
 
-#### Event Binding (L1716–1838)
-`bindEvents()` — todos os event listeners centralizados (nav, modals, filtros, CRUD, etc.)
+`submitUser/DeleteUser`, `submitDomain/DeleteDomain` (com `automacao_imagem`), `submitLanguage/DeleteLanguage`, `submitNiche/DeleteNiche` — `apiGet` após mutação + `render*`
 
-#### Init (L1840–1850)
-`init()` → `bindEvents()` + `initLogin()`, chamado no `DOMContentLoaded`
+### Theme/Notifications/Messages
+
+`applyThemeFromPrefs`, `toggleTheme` → `apiPut("preferences.php",{theme})`, `updateNotifBadge`, `renderNotifDropdown`, `updateMsgBadge`, `renderMessages`, `openPendenciesModal` → `pendencies.php`
+
+### Event Binding
+
+`bindEvents()` — nav `data-view`, stat cards → `navigateTo(requests, statusFilter)`, `globalSearch` debounce 250ms, `modal close` `[data-close]`, overlay click, `Escape`, `periodicAnalysisBody [data-key]` + row focus, `btnResetCompliance` routing periódico vs request, `btnDownloadImage/DeleteImage`
+
+### Init
+
+`init()` → `bindEvents()` + `initLogin()` em `DOMContentLoaded`, `defer` em `index.html:12`
 
 ---
 
 ## Frontend (HTML — `index.html`)
 
-### Estrutura de Seções
-
 | Seção | ID | Descrição |
 |-------|----|-----------|
-| Login | `#loginScreen` | Formulário de login com hints de credenciais |
-| App Wrapper | `#appWrapper` | Container principal (sidebar + content) |
-| Sidebar | `#sidebar` | Navegação com links `.nav-link[data-view]` |
-| Dashboard | `#viewDashboard` | Stat cards + tabela recente |
-| Requests | `#viewRequests` | Filtros + tabela completa |
-| Users | `#viewUsers` | Admin: tabela de usuários |
-| Domains | `#viewDomains` | Admin: tabela de domínios |
-| Languages | `#viewLanguages` | Admin: tabela de idiomas |
-| Niches | `#viewNiches` | Admin: tabela de nichos |
-| Messages | `#viewMessages` | Inbox/Sent com tabs |
-
-### Modais Importantes
-
-| Modal ID | Propósito |
-|----------|-----------|
-| `#modalDetail` | Detalhes do pedido (+ fluxo de status) |
-| `#modalRequest` | Criar novo pedido |
-| `#modalEdit` | Editar pedido existente |
-| `#modalPublish` | Publicar artigo (input URL publicada) |
-| `#modalDone` | Concluir artigo (input WP Edit URL) |
-| `#modalUser` | Criar/editar usuário |
-| `#modalDomain` | Criar/editar domínio |
-| `#modalLanguage` | Criar/editar idioma |
-| `#modalNiche` | Criar/editar nicho |
-| `#modalCompose` | Compor mensagem |
-| `#modalMsgDetail` | Visualizar mensagem |
+| Login | `#loginScreen` | hints `admin@hub.com` etc |
+| App | `#appWrapper` flex sidebar+main | `preconnect fonts.googleapis.com` `index.html:9`, `style.css` + `app.js defer` `index.html:12` |
+| Sidebar | `#sidebar` | `data-view` nav + `roleBadge` |
+| Views | `#viewDashboard/Requests/Trash/Users/Domains/Languages/Niches/Messages/Logs/ComplianceAnalysis` | `.view-panel` toggle `active` |
+| Requests Table | `#requestsTableBody` | 10 cols: Artigo, Blog, Solicitante, Redator, Status, Compliance (`has_resumo` clique), Prioridade, Prazo, **Imagem `has_imagem`**, Ações |
+| Domains Table | `#domainsTableBody` | 6 cols: Blog, URL, Nicho, **Automação Imagem `checkbox data-automacao-id`**, Status, Ações |
+| Periodic Table | `#periodicAnalysisBody` | 8 cols + sentinel `#periodicScrollSentinel` + `is-focused` |
+| Modais | 14 | `#modalDetail` (history lazy), `#modalNew/Edit`, `#modalPublish/Done`, `#modalUser/Domain`, `#modalImage` (viewer `object-fit:contain` + Baixar/Excluir), etc |
 
 ---
 
 ## Estilo (CSS — `style.css`)
 
-### Sistema de Design
-
-- **Temas**: dark (padrão) e light via `[data-theme="light"]`
-- **CSS Variables**: todas em `:root` — cores, radii, shadows, transitions
-- **Fonte**: Inter (Google Fonts)
-
-### Classes CSS Importantes
-
-| Padrão | Uso |
-|--------|-----|
-| `.admin-only` | Elementos visíveis apenas para admin (toggle via JS) |
-| `.gestor-admin-only` | Visível para quem pode criar pedidos |
-| `.gestor-col` | Coluna "Gestor" (visível para admin/revisor) |
-| `.status-badge.{status}` | Badge colorido de status |
-| `.role-tag.{role}` | Badge de role na tabela de usuários |
-| `.user-role-badge.role-{role}` | Badge de role no sidebar |
-| `.status-step` | Steps do fluxo de status no modal de detalhe |
-| `.published-link` | Container do link publicado |
-| `.wp-edit-link` | Container do link WP Edit |
-
-### Cores por Status/Role
-
-| Status | Cor |
-|--------|-----|
-| pending | amber/warning |
-| in-progress | azul/info |
-| review | roxo/primary |
-| done | verde/secondary |
-| published | teal (#00d2be) |
-| revisado | amber/warning |
-
-| Role | Cor |
-|------|-----|
-| admin | rosa/danger |
-| gestor | azul/info |
-| revisor | amber/warning |
-| redator | verde/secondary |
+- **Fonte**: `Inter` via `<link>` + `preconnect` (antes `@import` removido)
+- **Temas**: `:root` dark + `[data-theme="light"]` via `var(--bg-*)`
+- **Glass**: `rgba(30,30,52,0.6)` + `backdrop-filter: blur(20px)`
+- **Classes**: `.admin-only`, `.status-badge.{pending/done/...}`, `.role-tag`, `.is-focused` (`inset 3px` roxo), `.compliance-clickable`, `.image-view-btn`, `.scroll-sentinel`
+- **Spinner**: `@keyframes spin` `border-top-color` 0.6s linear
 
 ---
 
 ## Deploy
 
-- **Docker**: `docker-compose up` (PHP/Apache + MySQL)
-- **DB Config**: `api/config.php` (host, db, user, pass)
-- **Seed Data**: `database/schema.sql` contém inserções iniciais
+- **Prod**: `docker-compose.yml` `image: ghcr.io/daniel-vitorelli/articlehub:latest` + `traefik` `Host(articlehub.ai-equinox.com)` + `volume articlehub-sessions`
+- **Dev ahteste**: `docker-compose.dev.yml` `build: .` → `ahteste.ai-equinox.com`
+- **Local**: `docker-compose.local.yml` `db mysql:8.0` + `schema.sql:/docker-entrypoint-initdb.d/schema.sql` + `app 8080:80`
+- **CI**: `.github/workflows/docker-image.yml` `push main` → `docker/build-push-action` `ghcr.io` + `curl PORTAINER_WEBHOOK`
+- **DB Config**: `api/config.php` `APP_ENV=prod/dev` → `5.189.166.47` `articlehub/ahteste`
+- **Seed**: `INSERT users (9)`, `domains (5)` com `automacao_imagem 0`, `requests (10)` etc, `ON DUPLICATE KEY UPDATE`
 
-### Usuários de Teste
+### Usuários Teste
 
-| Role | Email | Senha |
-|------|-------|-------|
-| Admin | admin@hub.com | admin123 |
-| Gestor | fernando@hub.com | gestor123 |
-| Revisor | revisor@hub.com | revisor123 |
-| Redator | ana@hub.com | redator123 |
+| Role    | Email            | Senha      |
+|---------|------------------|------------|
+| Admin   | admin@hub.com    | admin123   |
+| Gestor  | fernando@hub.com | gestor123  |
+| Revisor | revisor@hub.com  | revisor123 |
+| Redator | ana@hub.com      | redator123 |
 
 ---
 
 ## Padrões e Convenções
 
-1. **Sem frameworks**: JS vanilla, PHP puro, CSS puro
-2. **SPA sem router**: navegação via `navigateTo()` + toggle de `.view-panel`
-3. **API RESTful**: GET/POST/PUT/DELETE, respostas JSON
-4. **Sessão PHP**: autenticação via `$_SESSION['user']`
-5. **Polling**: auto-refresh de dados a cada 15s via `setInterval`
-6. **Modais**: abrir com `openModal(id)`, fechar com `closeModal(id)` ou `data-close`
-7. **Filtros server-side**: requests já vêm filtrados por role no backend
-8. **Histórico**: toda alteração de request gera entrada em `request_history`
-9. **Notificações**: criadas automaticamente no backend ao alterar status
-10. **Duplicatas**: validadas via `checkDuplicate()` com normalização de acentos
+1. **Sem frameworks**: Vanilla JS IIFE, PHP puro, CSS puro
+2. **SPA sem router**: `navigateTo()` + `ensureViewData()` lazy
+3. **API REST**: GET/POST/PUT/DELETE JSON, `?action=` para multiplexar `requests.php`
+4. **Sessão PHP**: `$_SESSION['user']`, `432000s` (5 dias)
+5. **Polling**: 15s com `document.hidden` pause
+6. **Lazy load**: `has_imagem/has_resumo` flags + `?action=image/history/detail` + periodic `LIMIT/OFFSET` + `domains` deferred
+7. **Modais**: `openModal/closeModal` + `data-close` + overlay click + `Escape`
+8. **Histórico**: `request_history` JSON `changes` + lazy no detalhe
+9. **Notificações**: backend `INSERT notifications` em `updateStatus/createRequest/publish`
+10. **Duplicatas**: `checkDuplicate()` normalizado (full scan, poderia `LOWER(?)`)
+11. **Visual imutável**: otimizações não trocam pixels, só network/payload
