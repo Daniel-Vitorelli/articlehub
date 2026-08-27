@@ -17,8 +17,10 @@ function getRequestPublicFields(): string
     // wordcount, deadline, instructions, language, purpose, content_type,
     // niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
     // imagem MEDIUMBLOB, imagem_nome VARCHAR, created_at, updated_at
-    // `imagem` NÃO é carregada — pesada (MEDIUMBLOB). Em vez disso retornamos
-    // apenas flag leve `has_imagem` (0/1) via IS NOT NULL + `imagem_nome` para filename.
+    // `imagem` e `resumo_analise/instructions` NÃO são carregados na listagem (lazy)
+    // - imagem: flag `has_imagem` leve
+    // - resumo_analise: flag `has_resumo` leve (usado só p/ badge clicável)
+    // - instructions: só no detalhe/edit
     return '
         r.id,
         r.keyword,
@@ -33,15 +35,14 @@ function getRequestPublicFields(): string
         r.purpose,
         r.content_type,
         r.niche_id,
-        r.instructions,
         r.published_url,
         r.wp_edit_url,
         r.status_compliance,
-        r.resumo_analise,
         r.created_at,
         r.updated_at,
         (r.imagem IS NOT NULL) AS has_imagem,
-        r.imagem_nome
+        r.imagem_nome,
+        (r.resumo_analise IS NOT NULL AND r.resumo_analise != \'\') AS has_resumo
     ';
 }
 
@@ -79,6 +80,10 @@ switch ($method) {
     case 'GET':
         if ($action === 'image') {
             getRequestImage();
+        } elseif ($action === 'history') {
+            getRequestHistory();
+        } elseif ($action === 'detail') {
+            getRequestDetail();
         } elseif ($action === 'deleted') {
             listDeletedRequests();
         } else {
@@ -115,13 +120,12 @@ switch ($method) {
         jsonResponse(405, ['error' => 'Método não permitido.']);
 }
 
-// --- List (filtered by role) ---
+// --- List (filtered by role) - sem history (lazy) ---
 function listRequests(): void
 {
     $user = requireAuth();
     $db = getDB();
     $fields = getRequestPublicFields();
-    $historyFields = getHistoryPublicFields();
 
     if ($user['role'] === 'admin' || $user['role'] === 'revisor') {
         $sql = "SELECT {$fields},
@@ -168,21 +172,6 @@ function listRequests(): void
 
     $requests = $stmt->fetchAll();
 
-    // Attach history for each — agora também sem SELECT *
-    foreach ($requests as &$r) {
-        $hStmt = $db->prepare("SELECT {$historyFields}, u.name AS user_name
-                               FROM request_history rh
-                               LEFT JOIN users u ON rh.user_id = u.id
-                               WHERE rh.request_id = ?
-                               ORDER BY rh.created_at");
-        $hStmt->execute([$r['id']]);
-        $r['history'] = $hStmt->fetchAll();
-        // Parse JSON changes
-        foreach ($r['history'] as &$h) {
-            $h['changes'] = $h['changes'] ? json_decode($h['changes'], true) : [];
-        }
-    }
-
     jsonResponse(200, $requests);
 }
 
@@ -223,6 +212,107 @@ function listDeletedRequests(): void
     $requests = $stmt->fetchAll();
 
     jsonResponse(200, $requests);
+}
+
+// --- History (lazy, só quando abre detalhe) ---
+function getRequestHistory(): void
+{
+    $user = requireAuth();
+    $id = (int)($_GET['id'] ?? $_GET['request_id'] ?? 0);
+    if (!$id) {
+        jsonResponse(400, ['error' => 'ID obrigatório.']);
+    }
+    $db = getDB();
+    // Verifica permissão para ver a solicitação (mesma regra de listRequests)
+    $stmt = $db->prepare('SELECT requested_by_id, writer_id FROM requests WHERE id = ?');
+    $stmt->execute([$id]);
+    $req = $stmt->fetch();
+    if (!$req) {
+        jsonResponse(404, ['error' => 'Solicitação não encontrada.']);
+    }
+    $canView = false;
+    if (in_array($user['role'], ['admin', 'revisor'])) {
+        $canView = true;
+    } elseif ((int)$req['requested_by_id'] === (int)$user['id'] || (int)$req['writer_id'] === (int)$user['id']) {
+        $canView = true;
+    }
+    if (!$canView) {
+        jsonResponse(403, ['error' => 'Sem permissão para ver o histórico.']);
+    }
+
+    $historyFields = getHistoryPublicFields();
+    $hStmt = $db->prepare("SELECT {$historyFields}, u.name AS user_name
+                           FROM request_history rh
+                           LEFT JOIN users u ON rh.user_id = u.id
+                           WHERE rh.request_id = ?
+                           ORDER BY rh.created_at");
+    $hStmt->execute([$id]);
+    $history = $hStmt->fetchAll();
+    foreach ($history as &$h) {
+        $h['changes'] = $h['changes'] ? json_decode($h['changes'], true) : [];
+    }
+    jsonResponse(200, $history);
+}
+
+// --- Detail (lazy, inclui instructions e resumo_analise) ---
+function getRequestDetail(): void
+{
+    $user = requireAuth();
+    $id = (int)($_GET['id'] ?? 0);
+    if (!$id) {
+        jsonResponse(400, ['error' => 'ID obrigatório.']);
+    }
+    $db = getDB();
+    $detailFields = '
+        r.id,
+        r.keyword,
+        r.domain_id,
+        r.writer_id,
+        r.requested_by_id,
+        r.status,
+        r.priority,
+        r.wordcount,
+        r.deadline,
+        r.instructions,
+        r.language,
+        r.purpose,
+        r.content_type,
+        r.niche_id,
+        r.published_url,
+        r.wp_edit_url,
+        r.status_compliance,
+        r.resumo_analise,
+        r.created_at,
+        r.updated_at,
+        (r.imagem IS NOT NULL) AS has_imagem,
+        r.imagem_nome,
+        (r.resumo_analise IS NOT NULL AND r.resumo_analise != \'\') AS has_resumo
+    ';
+    $sql = "SELECT {$detailFields},
+                   d.blog_name, d.color, d.url AS domain_url,
+                   w.name AS writer_name, g.name AS requester_name,
+                   (SELECT COUNT(*) FROM request_pendencies rp WHERE rp.request_id = r.id AND rp.status = \"unresolved\") AS unresolved_pendencies_count
+            FROM requests r
+            LEFT JOIN domains d ON r.domain_id = d.id
+            LEFT JOIN users w ON r.writer_id = w.id
+            LEFT JOIN users g ON r.requested_by_id = g.id
+            WHERE r.id = ?";
+    $stmt = $db->prepare($sql);
+    $stmt->execute([$id]);
+    $r = $stmt->fetch();
+    if (!$r) {
+        jsonResponse(404, ['error' => 'Solicitação não encontrada.']);
+    }
+    $canView = false;
+    if (in_array($user['role'], ['admin', 'revisor'])) {
+        $canView = true;
+    } elseif ((int)$r['requested_by_id'] === (int)$user['id'] || (int)$r['writer_id'] === (int)$user['id']) {
+        $canView = true;
+    }
+    if (!$canView) {
+        jsonResponse(403, ['error' => 'Sem permissão para ver esta solicitação.']);
+    }
+    jsonResponse(200, $r);
 }
 
 // --- Create (any authenticated user) ---

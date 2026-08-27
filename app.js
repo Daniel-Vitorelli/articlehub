@@ -25,10 +25,11 @@
   let periodicAnalysisGroups = [];
   let periodicAnalysisVisible = [];
   let periodicAnalysisLoaded = 0;
+  let periodicAnalysisTotal = 0;
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.2.4";
+  const APP_VERSION = "1.3.0";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -195,36 +196,78 @@
     return json;
   }
 
-  // ---- Load Data from API ----
+  // ---- Load Data from API (lazy) ----
+  // Essencial (bloqueante): requests + notifications - usado no dashboard
   async function loadAll() {
     try {
-      const [
-        reqData,
-        delReqData,
-        domData,
-        langData,
-        nicheData,
-        notifData,
-        usersData,
-      ] = await Promise.all([
+      const [reqData, notifData] = await Promise.all([
         apiGet("requests.php"),
-        apiGet("requests.php?action=deleted"),
-        apiGet("domains.php"),
-        apiGet("languages.php"),
-        apiGet("niches.php"),
         apiGet("notifications.php"),
-        apiGet("users.php"),
       ]);
       requests = reqData;
-      deletedRequests = delReqData;
-      domains = domData;
-      languages = langData;
-      niches = nicheData;
       notifications = notifData;
-      users = usersData;
+      // Deferred não-bloqueante: domains/languages/niches/users/trash em background
+      // Visual não muda - dashboard já renderiza com essencial, resto chega async
+      loadDeferred();
     } catch (e) {
       console.error("Erro ao carregar dados:", e);
     }
+  }
+
+  // Deferred (lazy) - só busca se ainda não carregado, sem bloquear UI
+  let deferredLoading = null;
+  async function loadDeferred() {
+    if (deferredLoading) return deferredLoading;
+    // Já carregou tudo? evita refetch
+    const needs = [];
+    if (domains.length === 0) needs.push("domains");
+    if (languages.length === 0) needs.push("languages");
+    if (niches.length === 0) needs.push("niches");
+    if (users.length === 0) needs.push("users");
+    if (deletedRequests.length === 0) needs.push("deleted");
+    if (needs.length === 0) return;
+    deferredLoading = (async () => {
+      try {
+        const promises = [];
+        const keys = [];
+        if (needs.includes("domains")) { promises.push(apiGet("domains.php")); keys.push("domains"); }
+        if (needs.includes("languages")) { promises.push(apiGet("languages.php")); keys.push("languages"); }
+        if (needs.includes("niches")) { promises.push(apiGet("niches.php")); keys.push("niches"); }
+        if (needs.includes("users")) { promises.push(apiGet("users.php")); keys.push("users"); }
+        if (needs.includes("deleted")) { promises.push(apiGet("requests.php?action=deleted")); keys.push("deleted"); }
+        const results = await Promise.all(promises);
+        results.forEach((data, i) => {
+          const k = keys[i];
+          if (k === "domains") domains = data;
+          else if (k === "languages") languages = data;
+          else if (k === "niches") niches = data;
+          else if (k === "users") users = data;
+          else if (k === "deleted") deletedRequests = data;
+        });
+      } catch (e) {
+        console.error("Erro ao carregar dados deferred:", e);
+      } finally {
+        deferredLoading = null;
+      }
+    })();
+    return deferredLoading;
+  }
+
+  // Garante dados de uma view antes de render (chamado em navigateTo)
+  async function ensureViewData(viewName) {
+    const needs = [];
+    if (["requests"].includes(viewName) && (domains.length === 0 || users.length === 0)) {
+      if (domains.length === 0) needs.push(apiGet("domains.php").then(d => domains = d));
+      if (users.length === 0) needs.push(apiGet("users.php").then(d => users = d));
+      if (languages.length === 0) needs.push(apiGet("languages.php").then(d => languages = d));
+      if (niches.length === 0) needs.push(apiGet("niches.php").then(d => niches = d));
+    }
+    if (["users"].includes(viewName) && users.length === 0) needs.push(apiGet("users.php").then(d => users = d));
+    if (["domains"].includes(viewName) && domains.length === 0) needs.push(apiGet("domains.php").then(d => domains = d));
+    if (["languages"].includes(viewName) && languages.length === 0) needs.push(apiGet("languages.php").then(d => languages = d));
+    if (["niches"].includes(viewName) && niches.length === 0) needs.push(apiGet("niches.php").then(d => niches = d));
+    if (["trash"].includes(viewName) && deletedRequests.length === 0) needs.push(apiGet("requests.php?action=deleted").then(d => deletedRequests = d));
+    if (needs.length) await Promise.all(needs);
   }
 
   // ============================================
@@ -346,11 +389,12 @@
     $("#loginError").textContent = "";
   }
 
-  // ---- Auto-refresh polling ----
+  // ---- Auto-refresh polling (lazy, pausa se aba oculta) ----
   function startPolling() {
     stopPolling();
     pollInterval = setInterval(async () => {
       if (!currentUser) return;
+      if (document.hidden) return;
       try {
         const [notifData, reqData] = await Promise.all([
           apiGet("notifications.php"),
@@ -402,9 +446,9 @@
   }
 
   // ============================================
-  //  NAVIGATION
+  //  NAVIGATION (lazy - garante dados antes de render sem mudar visual)
   // ============================================
-  function navigateTo(viewName, options) {
+  async function navigateTo(viewName, options) {
     if (
       (viewName === "users" ||
         viewName === "domains" ||
@@ -441,6 +485,9 @@
       "compliance-analysis": "Análise Periódica de Compliance",
     };
     $("#pageTitle").textContent = titles[viewName] || "Dashboard";
+
+    // Lazy: garante dados antes de render (sem trocar layout, só evita tabela vazia)
+    await ensureViewData(viewName);
 
     if (viewName === "dashboard") renderDashboard();
     if (viewName === "requests") renderRequests();
@@ -507,8 +554,7 @@
         const blogName = r.blog_name || "—";
         const writerName = r.writer_name || "A definir";
 
-        const hasResumo =
-          r.resumo_analise && String(r.resumo_analise).trim() !== "";
+        const hasResumo = Number(r.has_resumo) ? true : (r.resumo_analise && String(r.resumo_analise).trim() !== "");
         const complianceValue = r.status_compliance || "";
         const label = complianceStatusLabel(complianceValue);
 
@@ -655,8 +701,7 @@
         const blogName = r.blog_name || "—";
         const writerName = r.writer_name || "A definir";
         const requesterName = r.requester_name || "—";
-        const hasResumo =
-          r.resumo_analise && String(r.resumo_analise).trim() !== "";
+        const hasResumo = Number(r.has_resumo) ? true : (r.resumo_analise && String(r.resumo_analise).trim() !== "");
         const complianceValue = r.status_compliance || "";
         const label = complianceStatusLabel(complianceValue);
         // Soft delete: only pending requests can be deleted
@@ -1012,8 +1057,19 @@
     return html;
   }
 
-  function openComplianceModal(id, opts = {}) {
-    const r = requests.find((x) => Number(x.id) === Number(id));
+  async function openComplianceModal(id, opts = {}) {
+    let r = requests.find((x) => Number(x.id) === Number(id));
+    // Lazy: se listagem leve não trouxe resumo_analise mas has_resumo indica que existe, busca detalhe
+    if (opts.resumo === undefined && r && Number(r.has_resumo) && r.resumo_analise === undefined) {
+      try {
+        const detail = await apiGet(`requests.php?action=detail&id=${id}`);
+        Object.assign(r, detail);
+      } catch (e) {
+        console.error("Falha ao carregar resumo lazy:", e);
+      }
+    }
+    // Re-busca após possível merge (caso tenha sido atualizado)
+    r = requests.find((x) => Number(x.id) === Number(id)) || r;
     const resumo =
       opts.resumo !== undefined ? opts.resumo : r ? r.resumo_analise : "";
     const status =
@@ -1100,20 +1156,50 @@
     }
   }
 
-  function openComplianceModalForPeriodic(key) {
-    const group = periodicAnalysisGroups.find((g) => g.key === key);
-    if (!group) return;
-    const latest = group.sorted[0];
-
-    openComplianceModal(null, {
-      resumo: latest.resumo_analise,
-      status: latest.status_compliance,
-      historyRows: group.sorted.slice(1).map((h) => ({
+  async function openComplianceModalForPeriodic(key) {
+    let group = periodicAnalysisGroups.find((g) => g.key === key);
+    let latest = group ? group.sorted[0] : null;
+    let historyRows = group ? group.sorted.slice(1).map((h) => ({
         created_at: h.created_at,
         status_compliance: h.status_compliance,
         resumo_analise: h.resumo_analise,
-      })),
-      showReset: true, // Mostrar o botão
+      })) : [];
+    // Se grupo não está em memória (paginação) ou só tem latest, busca histórico lazy
+    if (!group || group.sorted.length <= 1) {
+      const [dominio, idPost] = key.split("::");
+      try {
+        const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
+        if (rows && rows.length) {
+          rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          latest = rows[0];
+          historyRows = rows.slice(1).map((h) => ({
+            created_at: h.created_at,
+            status_compliance: h.status_compliance,
+            resumo_analise: h.resumo_analise,
+          }));
+          // Atualiza cache para reuso
+          if (!group) {
+            group = { key, sorted: rows };
+            periodicAnalysisGroups.push(group);
+          } else {
+            // Merge histórico que faltava
+            rows.forEach((r) => {
+              if (!group.sorted.find((x) => x.id === r.id)) group.sorted.push(r);
+            });
+            group.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          }
+        }
+      } catch (e) {
+        console.error("Falha ao carregar histórico periódico lazy:", e);
+      }
+    }
+    if (!latest) return;
+
+    await openComplianceModal(null, {
+      resumo: latest.resumo_analise,
+      status: latest.status_compliance,
+      historyRows,
+      showReset: true,
     });
 
     // IMPORTANTE: definir DEPOIS de openComplianceModal, pois ele limpa
@@ -1296,8 +1382,15 @@
   async function restoreRequest(id) {
     try {
       await apiPut("requests.php?action=restore", { id });
-      await loadAll();
+      // Atualiza ambas as listas (requests e lixeira) sem recarregar tudo
+      const [reqData, delData] = await Promise.all([
+        apiGet("requests.php"),
+        apiGet("requests.php?action=deleted"),
+      ]);
+      requests = reqData;
+      deletedRequests = delData;
       renderTrash();
+      updateNotifBadge();
     } catch (err) {
       alert("Erro ao recuperar solicitação: " + err.message);
     }
@@ -1774,10 +1867,20 @@
     }
   }
 
-  // ---- Detail ----
-  function openDetail(id) {
-    const r = requests.find((req) => req.id == id);
+  // ---- Detail (lazy history) ----
+  async function openDetail(id) {
+    const r = requests.find((req) => req.id == id) || deletedRequests.find((req) => req.id == id);
     if (!r) return;
+
+    // Lazy detail: listagem é leve (sem instructions/resumo_analise), busca sob demanda sem mudar visual
+    if (r.instructions === undefined || (Number(r.has_resumo) && r.resumo_analise === undefined)) {
+      try {
+        const detail = await apiGet(`requests.php?action=detail&id=${id}`);
+        Object.assign(r, detail);
+      } catch (e) {
+        console.error("Falha ao carregar detalhe lazy:", e);
+      }
+    }
 
     const blogName = r.blog_name || "—";
     const writerName = r.writer_name || "A definir";
@@ -1827,7 +1930,9 @@
       })
       .join("");
 
-    const historyHtml = buildHistoryHtml(r);
+    const historyHtml = r.history === undefined
+      ? `<div class="detail-section" id="detailHistoryContainer"><h4>📜 Histórico de Alterações</h4><div style="text-align:center; padding:1rem; color:var(--text-muted)"><span class="spinner"></span> Carregando histórico...</div></div>`
+      : buildHistoryHtml(r);
 
     const publishedLinkHtml =
       r.status === "published" && r.published_url
@@ -1940,6 +2045,23 @@
     }
 
     openModal("modalDetail");
+
+    // Lazy load history se ainda não carregado (N+1 removido da listagem)
+    if (r.history === undefined) {
+      try {
+        const hist = await apiGet(`requests.php?action=history&id=${id}`);
+        r.history = hist;
+        const newHtml = buildHistoryHtml(r);
+        const container = document.getElementById("detailHistoryContainer");
+        if (container) {
+          if (newHtml) container.outerHTML = newHtml;
+          else container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="text-align:center; padding:0.5rem; color:var(--text-muted)">Nenhum histórico</div>`;
+        }
+      } catch (e) {
+        const container = document.getElementById("detailHistoryContainer");
+        if (container) container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="color:var(--accent-danger); padding:1rem; text-align:center">Erro ao carregar histórico: ${escapeHtml(e.message)}</div>`;
+      }
+    }
   }
 
   function buildHistoryHtml(r) {
@@ -2042,7 +2164,7 @@
     if (!canDelete()) return; // Only true admins can hard delete
     try {
       await apiDelete(`requests.php?id=${id}&force=1`);
-      await loadAll();
+      deletedRequests = await apiGet("requests.php?action=deleted");
       refreshCurrentView();
     } catch (err) {
       alert("Erro: " + err.message);
@@ -2855,126 +2977,144 @@
     return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
   }
 
-  function renderPeriodicChunk() {
-    const tbody = $("#periodicAnalysisBody");
-    if (!tbody || periodicAnalysisLoaded >= periodicAnalysisVisible.length) {
-      if (periodicSentinelObserver) {
-        periodicSentinelObserver.disconnect();
-        periodicSentinelObserver = null;
+  async function fetchNextPeriodicPage() {
+    const statusFilter = $("#filterPeriodicStatus")?.value || "";
+    const typeFilter = $("#filterPeriodicType")?.value || "";
+    const domainFilter = $("#filterPeriodicDomain")?.value || "";
+    const params = new URLSearchParams({ limit: String(PERIODIC_PAGE_SIZE), offset: String(periodicAnalysisLoaded) });
+    if (statusFilter) params.set("status", statusFilter);
+    if (typeFilter) params.set("post_type", typeFilter);
+    if (domainFilter) params.set("dominio", domainFilter);
+    const res = await apiGet(`periodic_analysis.php?${params.toString()}`);
+    let rows, total;
+    if (Array.isArray(res)) {
+      rows = res;
+      total = rows.length;
+    } else {
+      rows = res.data || [];
+      total = res.total ?? rows.length;
+    }
+    // Acumula para tabela (visual idêntico, só paginado no backend)
+    periodicAnalysisVisible.push(...rows);
+    periodicAnalysisTotal = total;
+    // Mantém groups para histórico do modal (compatível com openComplianceModalForPeriodic)
+    rows.forEach((r) => {
+      const key = `${r.dominio}::${r.id_post ?? ""}`;
+      let g = periodicAnalysisGroups.find((x) => x.key === key);
+      if (!g) {
+        g = { key, sorted: [] };
+        periodicAnalysisGroups.push(g);
       }
+      if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r);
+      g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    });
+    return rows;
+  }
+
+  async function renderPeriodicChunk() {
+    const tbody = $("#periodicAnalysisBody");
+    if (!tbody) return;
+
+    // Se já tem dados em Visible não renderizados, renderiza chunk local
+    if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
       const sentinel = document.getElementById("periodicScrollSentinel");
       if (sentinel) sentinel.remove();
+      const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
+      const holder = document.createElement("tbody");
+      holder.innerHTML = chunk.map(periodicRowHtml).join("");
+      while (holder.firstChild) tbody.appendChild(holder.firstChild);
+      periodicAnalysisLoaded += chunk.length;
+      $("#periodicAnalysisInfo").textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+      if (periodicAnalysisLoaded < periodicAnalysisTotal) {
+        tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+        if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+        periodicSentinelObserver = new IntersectionObserver(
+          (entries) => {
+            if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+          },
+          { rootMargin: "300px" },
+        );
+        periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
+      } else {
+        if (periodicSentinelObserver) {
+          periodicSentinelObserver.disconnect();
+          periodicSentinelObserver = null;
+        }
+        const s = document.getElementById("periodicScrollSentinel");
+        if (s) s.remove();
+      }
       return;
+    }
+
+    // Se Visible esgotado mas ainda há mais no backend, busca próxima página
+    if (periodicAnalysisLoaded < periodicAnalysisTotal) {
+      const sentinel = document.getElementById("periodicScrollSentinel");
+      if (sentinel) sentinel.remove();
+      tbody.insertAdjacentHTML("beforeend", `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando...</div></td></tr>`);
+      try {
+        await fetchNextPeriodicPage();
+        const s2 = document.getElementById("periodicScrollSentinel");
+        if (s2) s2.remove();
+        // Recursivo: agora tem dados em Visible, renderiza
+        renderPeriodicChunk();
+      } catch (e) {
+        console.error("Erro ao paginar análises:", e);
+        const s2 = document.getElementById("periodicScrollSentinel");
+        if (s2) s2.remove();
+      }
+      return;
+    }
+
+    // Fim
+    if (periodicSentinelObserver) {
+      periodicSentinelObserver.disconnect();
+      periodicSentinelObserver = null;
     }
     const sentinel = document.getElementById("periodicScrollSentinel");
     if (sentinel) sentinel.remove();
-
-    const chunk = periodicAnalysisVisible.slice(
-      periodicAnalysisLoaded,
-      periodicAnalysisLoaded + PERIODIC_PAGE_SIZE,
-    );
-    const holder = document.createElement("tbody");
-    holder.innerHTML = chunk.map(periodicRowHtml).join("");
-    while (holder.firstChild) tbody.appendChild(holder.firstChild);
-    periodicAnalysisLoaded += chunk.length;
-
-    $("#periodicAnalysisInfo").textContent =
-      `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-
-    if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-      tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-      if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-      periodicSentinelObserver = new IntersectionObserver(
-        (entries) => {
-          if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-        },
-        { rootMargin: "300px" },
-      );
-      periodicSentinelObserver.observe(
-        document.getElementById("periodicScrollSentinel"),
-      );
-    }
   }
 
   async function renderComplianceAnalysis() {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
+    // Reset paginação
+    periodicAnalysisVisible = [];
+    periodicAnalysisLoaded = 0;
+    periodicAnalysisTotal = 0;
+    periodicAnalysisGroups = [];
+    if (periodicSentinelObserver) {
+      periodicSentinelObserver.disconnect();
+      periodicSentinelObserver = null;
+    }
+    tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     try {
-      const rows = await apiGet("periodic_analysis.php");
-
-      // Agrupa por domínio + id_post: a mais recente é a análise atual, o resto é histórico
-      const groups = new Map();
-      rows.forEach((r) => {
-        const key = `${r.dominio}::${r.id_post ?? ""}`;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(r);
-      });
-      periodicAnalysisGroups = [...groups.entries()].map(([key, entries]) => ({
-        key,
-        sorted: [...entries].sort(
-          (a, b) => new Date(b.created_at) - new Date(a.created_at),
-        ),
-      }));
-
+      // Popula filtros distintos sem carregar todas as linhas (lazy)
       const domainSelect = $("#filterPeriodicDomain");
       const currentDomain = domainSelect.value;
-      const domainOptions = [
-        ...new Set(rows.map((r) => r.dominio).filter(Boolean)),
-      ].sort((a, b) => a.localeCompare(b));
-      domainSelect.innerHTML =
-        '<option value="">Todos Domínios</option>' +
-        domainOptions
-          .map(
-            (d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`,
-          )
-          .join("");
-      domainSelect.value = currentDomain;
-
-      const statusFilter = $("#filterPeriodicStatus").value;
-      const typeFilter = $("#filterPeriodicType").value;
-      const typeOptions = [
-        ...new Set(rows.map((r) => r.post_type).filter(Boolean)),
-      ].sort((a, b) => a.localeCompare(b));
       const typeSelect = $("#filterPeriodicType");
       const currentType = typeSelect.value;
+      const [domainOpts, typeOpts] = await Promise.all([
+        apiGet("periodic_analysis.php?distinct=dominio").catch(() => []),
+        apiGet("periodic_analysis.php?distinct=post_type").catch(() => []),
+      ]);
+      domainSelect.innerHTML = '<option value="">Todos Domínios</option>' + domainOpts.sort((a, b) => a.localeCompare(b)).map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
+      domainSelect.value = currentDomain;
       const typeLabels = { post: "Post", page: "Página" };
-      typeSelect.innerHTML =
-        '<option value="">Todos Tipos</option>' +
-        typeOptions
-          .map(
-            (t) =>
-              `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`,
-          )
-          .join("");
+      typeSelect.innerHTML = '<option value="">Todos Tipos</option>' + typeOpts.sort((a, b) => a.localeCompare(b)).map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`).join("");
       typeSelect.value = currentType;
 
-      let visible = periodicAnalysisGroups.map((g) => g.sorted[0]);
-      if (statusFilter)
-        visible = visible.filter((r) => r.status_compliance === statusFilter);
-      if (typeFilter)
-        visible = visible.filter((r) => r.post_type === typeFilter);
-      if (domainSelect.value)
-        visible = visible.filter((r) => r.dominio === domainSelect.value);
-
-      visible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-      periodicAnalysisVisible = visible;
-      periodicAnalysisLoaded = 0;
-
-      if (!visible.length) {
-        if (periodicSentinelObserver) {
-          periodicSentinelObserver.disconnect();
-          periodicSentinelObserver = null;
-        }
+      // Primeira página já com filtros atuais
+      await fetchNextPeriodicPage();
+      if (!periodicAnalysisVisible.length) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
         return;
       }
-
       tbody.innerHTML = "";
       renderPeriodicChunk();
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
+      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
     }
   }
 

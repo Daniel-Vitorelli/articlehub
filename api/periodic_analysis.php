@@ -10,6 +10,75 @@ $db = getDB();
 $method = $_SERVER['REQUEST_METHOD'];
 
 if ($method === 'GET') {
+    // Distinct para popular filtros sem carregar tudo
+    if (isset($_GET['distinct'])) {
+        $distinct = trim($_GET['distinct']);
+        if ($distinct === 'dominio') {
+            $stmt = $db->query('SELECT DISTINCT dominio FROM periodic_analysis WHERE dominio IS NOT NULL AND dominio != "" ORDER BY dominio');
+            jsonResponse(200, $stmt->fetchAll(PDO::FETCH_COLUMN));
+        }
+        if ($distinct === 'post_type') {
+            $stmt = $db->query('SELECT DISTINCT post_type FROM periodic_analysis WHERE post_type IS NOT NULL AND post_type != "" ORDER BY post_type');
+            jsonResponse(200, $stmt->fetchAll(PDO::FETCH_COLUMN));
+        }
+    }
+    // Histórico de um grupo específico (lazy para modal) - ?history=1&dominio=xxx&id_post=123
+    if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
+        $dominioH = trim($_GET['dominio']);
+        $idPostH = trim($_GET['id_post']);
+        $stmt = $db->prepare(
+            'SELECT pa.*, d.url AS dominio_url
+             FROM periodic_analysis pa
+             LEFT JOIN domains d ON d.blog_name = pa.dominio
+             WHERE pa.dominio = ? AND pa.id_post = ?
+             ORDER BY pa.created_at DESC, pa.id DESC'
+        );
+        $stmt->execute([$dominioH, $idPostH]);
+        jsonResponse(200, $stmt->fetchAll());
+    }
+
+    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx
+    $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
+    $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
+    $status = trim($_GET['status'] ?? '');
+    $postType = trim($_GET['post_type'] ?? '');
+    $dominio = trim($_GET['dominio'] ?? '');
+
+    // Se tem paginação, retorna agrupado (latest por dominio+id_post) + paginado
+    if ($limit > 0) {
+        $where = [];
+        $params = [];
+        if ($status !== '') { $where[] = 'pa.status_compliance = ?'; $params[] = $status; }
+        if ($postType !== '') { $where[] = 'pa.post_type = ?'; $params[] = $postType; }
+        if ($dominio !== '') { $where[] = 'pa.dominio = ?'; $params[] = $dominio; }
+        $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
+
+        // Subquery para latest por grupo
+        $latestSub = '(SELECT MAX(id) as max_id FROM periodic_analysis GROUP BY dominio, id_post) AS latest';
+
+        // Total agrupado (para "Mostrando X de Y")
+        $countSql = "SELECT COUNT(*) FROM periodic_analysis pa INNER JOIN $latestSub ON pa.id = latest.max_id $whereSql";
+        $stmt = $db->prepare($countSql);
+        $stmt->execute($params);
+        $total = (int)$stmt->fetchColumn();
+
+        // Dados paginados
+        $dataSql = "SELECT pa.*, d.url AS dominio_url
+                    FROM periodic_analysis pa
+                    INNER JOIN $latestSub ON pa.id = latest.max_id
+                    LEFT JOIN domains d ON d.blog_name = pa.dominio
+                    $whereSql
+                    ORDER BY pa.created_at DESC, pa.id DESC
+                    LIMIT ? OFFSET ?";
+        $params[] = $limit;
+        $params[] = $offset;
+        $stmt = $db->prepare($dataSql);
+        $stmt->execute($params);
+        $rows = $stmt->fetchAll();
+        jsonResponse(200, ['data' => $rows, 'total' => $total]);
+    }
+
+    // Fallback sem paginação (compatível com frontend antigo)
     $stmt = $db->query(
         'SELECT pa.*, d.url AS dominio_url
          FROM periodic_analysis pa
