@@ -29,7 +29,7 @@
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.1";
+  const APP_VERSION = "1.3.2";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -1538,7 +1538,12 @@
     const body = $("#periodicAnalysisBody");
     const panel = document.getElementById("viewComplianceAnalysis");
     if (!body || !panel || !panel.classList.contains("active")) return;
+    // Não limpa se clicou na própria linha, no badge que abre modal, ou dentro de qualquer modal
     if (e.target.closest("#periodicAnalysisBody tr") || e.target.closest("[data-key]")) return;
+    if (e.target.closest(".modal-overlay") || e.target.closest(".modal")) return;
+    if (document.querySelector(".modal-overlay.active")) return;
+    // Botões dentro da view que abrem modal a partir da linha focada (mesmo fora da tabela) não devem limpar
+    if (e.target.closest("#viewComplianceAnalysis button") && body.querySelector("tr.is-focused")) return;
     body.querySelectorAll("tr.is-focused").forEach((row) => row.classList.remove("is-focused"));
   });
 
