@@ -19,9 +19,13 @@ COPY index.html .
 COPY style.css .
 COPY app.js .
 COPY api/ api/
+COPY storage/.gitkeep storage/.gitkeep
 
 # Set proper permissions
-RUN chown -R www-data:www-data /var/www/html
+RUN chown -R www-data:www-data /var/www/html && \
+    mkdir -p /var/www/html/storage && \
+    chown -R www-data:www-data /var/www/html/storage && \
+    chmod -R 775 /var/www/html/storage
 
 # Configure PHP session directory
 RUN mkdir -p /var/lib/php/sessions && \

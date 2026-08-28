@@ -5,10 +5,12 @@ services:
     image: ghcr.io/daniel-vitorelli/articlehub:latest
     environment:
       - APP_ENV=prod
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-articlehub-webhook-2026}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - articlehub-sessions:/var/lib/php/sessions
+      - articlehub-storage:/var/www/html/storage
     networks:
       - net
     deploy:
@@ -39,3 +41,4 @@ networks:
 
 volumes:
   articlehub-sessions:
+  articlehub-storage:

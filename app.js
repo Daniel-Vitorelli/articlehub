@@ -20,6 +20,7 @@
   let currentUser = null;
   let currentMsgTab = "inbox";
   let pollInterval = null;
+  let realtimeSource = null;
   let complianceHistoryProvider = null;
   let currentImageData = null; // { id, mime, b64, filename } - só fica em memória enquanto modal aberto
   let periodicAnalysisGroups = [];
@@ -31,7 +32,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.7";
+  const APP_VERSION = "1.4.0";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -360,6 +361,7 @@
     updateMsgBadge();
     navigateTo("dashboard");
     startPolling();
+    connectRealtime();
   }
 
   async function handleLogin(e) {
@@ -380,6 +382,7 @@
 
   async function handleLogout() {
     stopPolling();
+    disconnectRealtime();
     try {
       await apiPost("auth.php?action=logout", {});
     } catch (e) {
@@ -420,6 +423,95 @@
     if (pollInterval) {
       clearInterval(pollInterval);
       pollInterval = null;
+    }
+  }
+
+  // ---- Realtime via SSE + Webhook ----
+  function connectRealtime() {
+    disconnectRealtime();
+    if (!currentUser) return;
+    try {
+      const es = new EventSource("api/realtime.php", { withCredentials: true });
+      realtimeSource = es;
+
+      es.addEventListener("connected", (e) => {
+        // Conexão estabelecida, não precisa fazer nada (polling continua como fallback)
+        console.log("Realtime conectado", e.data);
+      });
+
+      es.addEventListener("refresh", async (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          console.log("Webhook refresh recebido", payload);
+          // Pega os mesmos dados que polling faz, mas imediatamente
+          const [notifData, reqData] = await Promise.all([
+            apiGet("notifications.php"),
+            apiGet("requests.php"),
+          ]);
+          notifications = notifData;
+          requests = reqData;
+          updateNotifBadge();
+          updateMsgBadge();
+          const active = document.querySelector(".nav-link.active[data-view]");
+          if (active) {
+            const view = active.dataset.view;
+            if (view === "messages") renderMessages();
+            else if (view === "dashboard") renderDashboard();
+            else if (view === "requests") renderRequests();
+            else if (view === "trash") {
+              // Atualiza lixeira silenciosamente se estiver nela
+              try {
+                deletedRequests = await apiGet("requests.php?action=deleted");
+                renderTrash();
+              } catch (_) {}
+            } else if (view === "compliance-analysis") {
+              // Recarga silenciosa da periódica (sem mostrar loading na tabela de solicitações)
+              try {
+                await renderComplianceAnalysis();
+              } catch (e) {
+                console.error("Falha ao atualizar periódica via realtime:", e);
+              }
+            }
+            // Se o webhook foi para periódica mas usuário não está nela, atualiza cache em background para quando navegar
+            if (is("admin") && view !== "compliance-analysis") {
+              const payloadEvent = payload?.event || "";
+              if (payloadEvent.includes("periodic") || payloadEvent === "refresh") {
+                // Pré-carrega periódica em background sem mexer na view atual
+                apiGet("periodic_analysis.php?limit=50&offset=0").then((res) => {
+                  const rows = Array.isArray(res) ? res : res.data || [];
+                  // Atualiza cache silenciosamente
+                  periodicAnalysisVisible = rows;
+                  periodicAnalysisLoaded = rows.length;
+                  periodicAnalysisTotal = Array.isArray(res) ? rows.length : res.total || 0;
+                }).catch(() => {});
+              }
+            }
+          }
+        } catch (err) {
+          console.error("Erro ao processar refresh realtime:", err);
+        }
+      });
+
+      es.onerror = (err) => {
+        console.warn("Realtime erro/desconectado, tentando reconectar em 5s", err);
+        // EventSource reconecta automaticamente, mas se fechar, tenta de novo
+        if (es.readyState === EventSource.CLOSED) {
+          setTimeout(() => {
+            if (currentUser) connectRealtime();
+          }, 5000);
+        }
+      };
+    } catch (e) {
+      console.error("Falha ao conectar realtime:", e);
+    }
+  }
+
+  function disconnectRealtime() {
+    if (realtimeSource) {
+      try {
+        realtimeSource.close();
+      } catch (_) {}
+      realtimeSource = null;
     }
   }
 
