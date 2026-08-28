@@ -31,7 +31,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.5";
+  const APP_VERSION = "1.3.6";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -3400,6 +3400,8 @@
   async function renderComplianceAnalysis() {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
+    const hadPreviousData = periodicAnalysisVisible.length > 0 && tbody.querySelectorAll("tr").length > 0 && !tbody.querySelector("#periodicScrollSentinel");
+    const previousHTML = hadPreviousData ? tbody.innerHTML : "";
     // Reset paginação e seleção
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
@@ -3411,7 +3413,10 @@
       periodicSentinelObserver.disconnect();
       periodicSentinelObserver = null;
     }
-    tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
+    // Silencioso se já tinha dados (filtro): mantém tabela visível, sem spinner
+    if (!hadPreviousData) {
+      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
+    }
     try {
       // Popula filtros distintos sem carregar todas as linhas (lazy)
       const domainSelect = $("#filterPeriodicDomain");
@@ -3439,7 +3444,11 @@
       renderPeriodicChunk();
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
-      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
+      if (hadPreviousData && previousHTML) {
+        tbody.innerHTML = previousHTML;
+      } else {
+        tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
+      }
     }
   }
 

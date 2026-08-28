@@ -1010,15 +1010,6 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   display: block !important;
 }
 
-tr:hover .periodic-date,
-tr.is-selected .periodic-date {
-  opacity: 0;
-}
-
-.periodic-date {
-  transition: opacity 0.15s ease;
-}
-
 .compliance-history-row {
   cursor: pointer;
 }
