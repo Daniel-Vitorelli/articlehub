@@ -233,17 +233,9 @@
       users = userData;
       deletedRequests = delData;
       // Histórico de todas as solicitações em cache para modal instantâneo
-      requestHistoryCache = {};
-      (Array.isArray(histData) ? histData : []).forEach((h) => {
-        if (!requestHistoryCache[h.request_id]) requestHistoryCache[h.request_id] = [];
-        requestHistoryCache[h.request_id].push(h);
-      });
+      requestHistoryCache = buildHistoryCache(histData);
       // Histórico de compliance em cache para modal instantâneo
-      complianceHistoryCache = {};
-      (Array.isArray(compHistData) ? compHistData : []).forEach((h) => {
-        if (!complianceHistoryCache[h.request_id]) complianceHistoryCache[h.request_id] = [];
-        complianceHistoryCache[h.request_id].push(h);
-      });
+      complianceHistoryCache = buildHistoryCache(compHistData);
       // Análise periódica: pré-carrega tudo e agrupa em memória (abre na hora)
       buildPeriodicInMemory(periodicRaw);
     } catch (e) {
@@ -471,6 +463,72 @@
   }
 
   // ---- Realtime via SSE + Webhook ----
+  // Atualiza em segundo plano TODOS os dados da view atual, sem nenhum indicador
+  // de carregamento. A tela só é substituída quando os fetches terminam.
+  async function silentRefreshActiveView() {
+    // Notificações/mensagens: badge sempre atualizado
+    try {
+      notifications = await apiGet("notifications.php");
+      updateNotifBadge();
+      updateMsgBadge();
+    } catch (_) {}
+
+    const active = document.querySelector(".nav-link.active[data-view]");
+    const view = active ? active.dataset.view : "";
+    if (!view) return;
+
+    if (view === "requests") {
+      try {
+        const [reqData, histData, compHistData] = await Promise.all([
+          apiGet("requests.php"),
+          apiGet("requests.php?action=history_all").catch(() => []),
+          apiGet("compliance.php?action=history_all").catch(() => []),
+        ]);
+        requests = reqData;
+        requestHistoryCache = buildHistoryCache(histData);
+        complianceHistoryCache = buildHistoryCache(compHistData);
+        renderRequests();
+      } catch (e) {
+        console.error("Falha ao atualizar solicitações via realtime:", e);
+      }
+      // Mantém a periódica em cache em background (sem UI) para quando navegar
+      reloadPeriodicFromServer().catch(() => {});
+    } else if (view === "trash") {
+      try {
+        deletedRequests = await apiGet("requests.php?action=deleted");
+        renderTrash();
+      } catch (_) {}
+      reloadPeriodicFromServer().catch(() => {});
+    } else if (view === "compliance-analysis") {
+      try {
+        // Re-busca TUDO da periódica no servidor (não usa cache obsoleto) e atualiza a tela
+        await reloadPeriodicFromServer();
+        await renderComplianceAnalysis({ preserveSelection: true });
+      } catch (e) {
+        console.error("Falha ao atualizar periódica via realtime:", e);
+      }
+      // Mantém requests em cache em background (sem UI)
+      apiGet("requests.php").then((d) => { requests = d; }).catch(() => {});
+    } else if (view === "dashboard") {
+      try {
+        requests = await apiGet("requests.php");
+        renderDashboard();
+      } catch (_) {}
+    } else if (view === "messages") {
+      try { await renderMessages(); } catch (_) {}
+    }
+  }
+
+  // Agrupa um array de histórico em mapa request_id -> [linhas]
+  function buildHistoryCache(data) {
+    const m = {};
+    (Array.isArray(data) ? data : []).forEach((h) => {
+      if (!m[h.request_id]) m[h.request_id] = [];
+      m[h.request_id].push(h);
+    });
+    return m;
+  }
+
   function connectRealtime() {
     disconnectRealtime();
     if (!currentUser) return;
@@ -485,46 +543,13 @@
 
       es.addEventListener("refresh", async (e) => {
         try {
-          const payload = JSON.parse(e.data);
+          let payload = {};
+          try { payload = JSON.parse(e.data); } catch (_) {}
           console.log("Webhook refresh recebido", payload);
-          // Pega os mesmos dados que polling faz, mas imediatamente
-          const [notifData, reqData] = await Promise.all([
-            apiGet("notifications.php"),
-            apiGet("requests.php"),
-          ]);
-          notifications = notifData;
-          requests = reqData;
-          updateNotifBadge();
-          updateMsgBadge();
-          const active = document.querySelector(".nav-link.active[data-view]");
-          if (active) {
-            const view = active.dataset.view;
-            if (view === "messages") renderMessages();
-            else if (view === "dashboard") renderDashboard();
-            else if (view === "requests") renderRequests();
-            else if (view === "trash") {
-              // Atualiza lixeira silenciosamente se estiver nela
-              try {
-                deletedRequests = await apiGet("requests.php?action=deleted");
-                renderTrash();
-              } catch (_) {}
-            } else if (view === "compliance-analysis") {
-              // Recarga silenciosa da periódica (sem mostrar loading na tabela de solicitações)
-              try {
-                await renderComplianceAnalysis();
-              } catch (e) {
-                console.error("Falha ao atualizar periódica via realtime:", e);
-              }
-            }
-            // Se o webhook foi específico de periódica mas usuário não está nela,
-            // atualiza cache em background para quando navegar (só em eventos "periodic")
-            if (is("admin") && view !== "compliance-analysis") {
-              const payloadEvent = payload?.event || "";
-              if (payloadEvent === "periodic") {
-                reloadPeriodicFromServer().catch(() => {});
-              }
-            }
-          }
+          // Refresh em BACKGROUND de tudo o que o usuário está vendo.
+          // Não é limitado a ids específicos: atualiza TODOS os dados da view atual.
+          // Sem spinner: a tela só é atualizada quando os fetches terminam.
+          await silentRefreshActiveView();
         } catch (err) {
           console.error("Erro ao processar refresh realtime:", err);
         }
@@ -3528,18 +3553,19 @@
     if (sentinel) sentinel.remove();
   }
 
-  async function renderComplianceAnalysis() {
+  async function renderComplianceAnalysis(opts = {}) {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
     // Garante dados em memória (preload em loadAll ou fallback de rede, uma única vez)
     await ensurePeriodicLoaded();
     const hadPreviousData = periodicAnalysisVisible.length > 0 && tbody.querySelectorAll("tr").length > 0 && !tbody.querySelector("#periodicScrollSentinel");
     const previousHTML = hadPreviousData ? tbody.innerHTML : "";
-    // Reset paginação e seleção (NÃO zera groups — groups são a fonte em memória)
+    // Reset paginação (NÃO zera groups — groups são a fonte em memória).
+    // Seleção só é limpa em carga explícita do usuário; em refresh de fundo é preservada.
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
     periodicAnalysisTotal = 0;
-    selectedPeriodicKeys.clear();
+    if (!opts.preserveSelection) selectedPeriodicKeys.clear();
     updateBulkUI();
     if (periodicSentinelObserver) {
       periodicSentinelObserver.disconnect();
