@@ -28,8 +28,10 @@
   let periodicAnalysisTotal = 0;
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
+  const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
+  const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.3";
+  const APP_VERSION = "1.3.4";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -1324,7 +1326,7 @@
               (entries) => {
                 if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
               },
-              { rootMargin: "300px" },
+              { rootMargin: PERIODIC_SENTINEL_MARGIN },
             );
             periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
           } else {
@@ -1389,7 +1391,7 @@
               (entries) => {
                 if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
               },
-              { rootMargin: "300px" },
+              { rootMargin: PERIODIC_SENTINEL_MARGIN },
             );
             periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
           }
@@ -1397,6 +1399,128 @@
       } catch (e2) {
         console.error("Fallback silencioso falhou:", e2);
       }
+    }
+  }
+
+  function updateBulkUI() {
+    const count = selectedPeriodicKeys.size;
+    const bulkBtn = $("#btnBulkReanalyze");
+    const bulkCount = $("#bulkCount");
+    const selectAll = $("#periodicSelectAll");
+    if (bulkCount) bulkCount.textContent = count;
+    if (bulkBtn) {
+      bulkBtn.disabled = count === 0;
+      bulkBtn.style.opacity = count === 0 ? "0.5" : "1";
+      bulkBtn.style.pointerEvents = count === 0 ? "none" : "auto";
+    }
+    if (selectAll) {
+      const visibleKeys = periodicAnalysisVisible.map((r) => `${r.dominio}::${r.id_post}`);
+      const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((k) => selectedPeriodicKeys.has(k));
+      selectAll.checked = allVisibleSelected;
+      selectAll.indeterminate = !allVisibleSelected && visibleKeys.some((k) => selectedPeriodicKeys.has(k));
+    }
+  }
+
+  async function handleBulkReanalyze() {
+    if (selectedPeriodicKeys.size === 0) return;
+    const keys = Array.from(selectedPeriodicKeys);
+    if (!confirm(`Analisar novamente ${keys.length} ${keys.length === 1 ? "item" : "itens"} selecionados?`)) return;
+    const btn = $("#btnBulkReanalyze");
+    const originalHTML = btn ? btn.innerHTML : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Criando...';
+      btn.style.opacity = "0.5";
+      btn.style.pointerEvents = "none";
+    }
+    let successCount = 0;
+    let failCount = 0;
+    const concurrency = 3;
+    for (let i = 0; i < keys.length; i += concurrency) {
+      const chunk = keys.slice(i, i + concurrency);
+      const results = await Promise.allSettled(
+        chunk.map(async (key) => {
+          const [dominio, idPost] = key.split("::");
+          let group = periodicAnalysisGroups.find((g) => g.key === key);
+          let latest = group ? group.sorted[0] : periodicAnalysisVisible.find((r) => `${r.dominio}::${r.id_post}` === key);
+          if (!latest) {
+            try {
+              const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
+              if (rows && rows.length) latest = rows[0];
+            } catch (e) {}
+          }
+          if (!latest) throw new Error(`Dados não encontrados para ${key}`);
+          const payload = {
+            action: "reanalyze",
+            id_post: latest.id_post,
+            post_type: latest.post_type,
+            dominio: latest.dominio,
+            publish_status: latest.publish_status || "draft",
+          };
+          const res = await apiPost("periodic_analysis.php", payload);
+          if (!res || !res.success) throw new Error(res?.message || "Falha");
+          return { key, latest, res };
+        }),
+      );
+      results.forEach((r) => {
+        if (r.status === "fulfilled") successCount++;
+        else {
+          failCount++;
+          console.error("Falha ao reanalisar", r.reason);
+        }
+      });
+    }
+    selectedPeriodicKeys.clear();
+    updateBulkUI();
+    const selAll = $("#periodicSelectAll");
+    if (selAll) {
+      selAll.checked = false;
+      selAll.indeterminate = false;
+    }
+    document.querySelectorAll(".periodic-checkbox").forEach((cb) => (cb.checked = false));
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+      btn.style.opacity = "0.5";
+      btn.style.pointerEvents = "none";
+    }
+    if (successCount > 0) {
+      // Recarrega silenciosamente sem mostrar loading na tabela de solicitações
+      try {
+        periodicAnalysisVisible = [];
+        periodicAnalysisLoaded = 0;
+        periodicAnalysisTotal = 0;
+        periodicAnalysisGroups = [];
+        const tbody = document.getElementById("periodicAnalysisBody");
+        if (tbody) tbody.innerHTML = `<tr><td colspan="9"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
+        await fetchNextPeriodicPage();
+        const tb = document.getElementById("periodicAnalysisBody");
+        if (tb) {
+          tb.innerHTML = "";
+          const holder = document.createElement("tbody");
+          holder.innerHTML = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length)).map(periodicRowHtml).join("");
+          while (holder.firstChild) tb.appendChild(holder.firstChild);
+          periodicAnalysisLoaded = Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length);
+          const infoEl = document.getElementById("periodicAnalysisInfo");
+          if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+          if (periodicAnalysisLoaded < periodicAnalysisTotal) {
+            tb.insertAdjacentHTML("beforeend", periodicSentinelRow());
+            if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+            periodicSentinelObserver = new IntersectionObserver(
+              (entries) => {
+                if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+              },
+              { rootMargin: PERIODIC_SENTINEL_MARGIN },
+            );
+            periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
+          }
+        }
+      } catch (e) {
+        console.error("Falha ao recarregar após bulk:", e);
+      }
+      alert(`${successCount} reanálise(s) criada(s)${failCount ? `, ${failCount} falha(s)` : ""}.`);
+    } else if (failCount) {
+      alert(`Falha ao reanalisar: ${failCount} erro(s).`);
     }
   }
 
@@ -1666,6 +1790,38 @@
     if (e.target.closest("#viewComplianceAnalysis button") && body.querySelector("tr.is-focused")) return;
     body.querySelectorAll("tr.is-focused").forEach((row) => row.classList.remove("is-focused"));
   });
+
+  // Bulk seleção periódica
+  const bulkBtn = $("#btnBulkReanalyze");
+  if (bulkBtn) bulkBtn.addEventListener("click", handleBulkReanalyze);
+  const selectAll = $("#periodicSelectAll");
+  if (selectAll)
+    selectAll.addEventListener("change", (e) => {
+      const checked = e.target.checked;
+      document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
+        cb.checked = checked;
+        const k = cb.dataset.periodicKey;
+        if (checked) selectedPeriodicKeys.add(k);
+        else selectedPeriodicKeys.delete(k);
+      });
+      updateBulkUI();
+    });
+  const periodicBodyForCheck = document.getElementById("periodicAnalysisBody");
+  if (periodicBodyForCheck) {
+    periodicBodyForCheck.addEventListener("change", (e) => {
+      const cb = e.target.closest(".periodic-checkbox");
+      if (!cb) return;
+      const k = cb.dataset.periodicKey;
+      if (cb.checked) selectedPeriodicKeys.add(k);
+      else selectedPeriodicKeys.delete(k);
+      updateBulkUI();
+      e.stopPropagation();
+    });
+    // Evita que clique no checkbox também dispare foco na linha
+    periodicBodyForCheck.addEventListener("click", (e) => {
+      if (e.target.closest(".periodic-checkbox")) e.stopPropagation();
+    });
+  }
 
   $("#btnResetCompliance").addEventListener("click", async () => {
     const modal = document.getElementById("modalCompliance");
@@ -3099,8 +3255,10 @@
       ? `<span class="type-badge ${escapeHtml(r.post_type)}">${escapeHtml(typeLabel)}</span>`
       : "—";
     const dateStr = formatDateTime(r.created_at);
+    const isSelected = selectedPeriodicKeys.has(key);
     return `
-      <tr>
+      <tr data-periodic-key="${escapeAttr(key)}">
+        <td style="text-align:center;"><input type="checkbox" class="periodic-checkbox" data-periodic-key="${escapeAttr(key)}" ${isSelected ? "checked" : ""} style="width:16px; height:16px; accent-color:var(--accent-primary); cursor:pointer;"></td>
         <td style="white-space:nowrap">${dateStr}</td>
         <td><div class="blog-name"><span class="blog-dot" style="background:${domainColor}"></span>${escapeHtml(r.dominio)}</div></td>
         <td>${r.id_post != null ? r.id_post : "—"}</td>
@@ -3117,7 +3275,7 @@
   }
 
   function periodicSentinelRow() {
-    return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
+    return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="9"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
   }
 
   async function fetchNextPeriodicPage() {
@@ -3151,6 +3309,7 @@
       if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r);
       g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     });
+    updateBulkUI();
     return rows;
   }
 
@@ -3168,6 +3327,7 @@
       while (holder.firstChild) tbody.appendChild(holder.firstChild);
       periodicAnalysisLoaded += chunk.length;
       $("#periodicAnalysisInfo").textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+      updateBulkUI();
       if (periodicAnalysisLoaded < periodicAnalysisTotal) {
         tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
         if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
@@ -3175,7 +3335,7 @@
           (entries) => {
             if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
           },
-          { rootMargin: "300px" },
+          { rootMargin: PERIODIC_SENTINEL_MARGIN },
         );
         periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
       } else {
@@ -3220,16 +3380,18 @@
   async function renderComplianceAnalysis() {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
-    // Reset paginação
+    // Reset paginação e seleção
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
     periodicAnalysisTotal = 0;
     periodicAnalysisGroups = [];
+    selectedPeriodicKeys.clear();
+    updateBulkUI();
     if (periodicSentinelObserver) {
       periodicSentinelObserver.disconnect();
       periodicSentinelObserver = null;
     }
-    tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     try {
       // Popula filtros distintos sem carregar todas as linhas (lazy)
       const domainSelect = $("#filterPeriodicDomain");
@@ -3249,7 +3411,7 @@
       // Primeira página já com filtros atuais
       await fetchNextPeriodicPage();
       if (!periodicAnalysisVisible.length) {
-        tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
         return;
       }
@@ -3257,7 +3419,7 @@
       renderPeriodicChunk();
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
-      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="9"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
     }
   }
 

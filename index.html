@@ -503,6 +503,7 @@
             <div class="table-header table-header-requests">
               <h3>Análises Periódicas de Compliance</h3>
               <div class="table-actions table-actions-filters" style="flex-wrap:wrap;gap:6px;">
+                <button class="btn-primary" id="btnBulkReanalyze" disabled style="opacity:0.5; pointer-events:none;"><span>↺</span> Analisar Selecionados (<span id="bulkCount">0</span>)</button>
                 <select class="filter-select" id="filterPeriodicStatus" aria-label="Filtrar por status de compliance">
                   <option value="">Todos Status Compliance</option>
                   <option value="nao_analisado">Não analisado</option>
@@ -522,6 +523,7 @@
             <table class="data-table">
               <thead>
                 <tr>
+                  <th style="width:36px; text-align:center;"><input type="checkbox" id="periodicSelectAll" title="Selecionar todas"></th>
                   <th>Data/Hora</th>
                   <th>Domínio</th>
                   <th>ID Post</th>
