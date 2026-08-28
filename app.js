@@ -32,7 +32,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.1";
+  const APP_VERSION = "1.4.2";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -206,57 +206,28 @@
   // Essencial (bloqueante): requests + notifications - usado no dashboard
   async function loadAll() {
     try {
-      const [reqData, notifData] = await Promise.all([
+      // Carga PARALELA de tudo que é leve (listas pequenas).
+      // Navegação fica instantânea porque os dados de referência já estão em memória.
+      // Só os campos pesados (resumo_analise, instructions, imagem) continuam lazy por registro.
+      const [reqData, notifData, domData, langData, nicheData, userData, delData] = await Promise.all([
         apiGet("requests.php"),
         apiGet("notifications.php"),
+        apiGet("domains.php"),
+        apiGet("languages.php"),
+        apiGet("niches.php"),
+        apiGet("users.php"),
+        apiGet("requests.php?action=deleted"),
       ]);
       requests = reqData;
       notifications = notifData;
-      // Deferred não-bloqueante: domains/languages/niches/users/trash em background
-      // Visual não muda - dashboard já renderiza com essencial, resto chega async
-      loadDeferred();
+      domains = domData;
+      languages = langData;
+      niches = nicheData;
+      users = userData;
+      deletedRequests = delData;
     } catch (e) {
       console.error("Erro ao carregar dados:", e);
     }
-  }
-
-  // Deferred (lazy) - só busca se ainda não carregado, sem bloquear UI
-  let deferredLoading = null;
-  async function loadDeferred() {
-    if (deferredLoading) return deferredLoading;
-    // Já carregou tudo? evita refetch
-    const needs = [];
-    if (domains.length === 0) needs.push("domains");
-    if (languages.length === 0) needs.push("languages");
-    if (niches.length === 0) needs.push("niches");
-    if (users.length === 0) needs.push("users");
-    if (deletedRequests.length === 0) needs.push("deleted");
-    if (needs.length === 0) return;
-    deferredLoading = (async () => {
-      try {
-        const promises = [];
-        const keys = [];
-        if (needs.includes("domains")) { promises.push(apiGet("domains.php")); keys.push("domains"); }
-        if (needs.includes("languages")) { promises.push(apiGet("languages.php")); keys.push("languages"); }
-        if (needs.includes("niches")) { promises.push(apiGet("niches.php")); keys.push("niches"); }
-        if (needs.includes("users")) { promises.push(apiGet("users.php")); keys.push("users"); }
-        if (needs.includes("deleted")) { promises.push(apiGet("requests.php?action=deleted")); keys.push("deleted"); }
-        const results = await Promise.all(promises);
-        results.forEach((data, i) => {
-          const k = keys[i];
-          if (k === "domains") domains = data;
-          else if (k === "languages") languages = data;
-          else if (k === "niches") niches = data;
-          else if (k === "users") users = data;
-          else if (k === "deleted") deletedRequests = data;
-        });
-      } catch (e) {
-        console.error("Erro ao carregar dados deferred:", e);
-      } finally {
-        deferredLoading = null;
-      }
-    })();
-    return deferredLoading;
   }
 
   // Garante dados de uma view antes de render (chamado em navigateTo)
