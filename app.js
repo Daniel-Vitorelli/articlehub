@@ -25,14 +25,17 @@
   let currentImageData = null; // { id, mime, b64, filename } - só fica em memória enquanto modal aberto
   let periodicAnalysisGroups = [];
   let periodicAnalysisVisible = [];
+  let periodicAnalysisAll = []; // latest row por grupo (sem filtro) — fonte para filtragem client-side
   let periodicAnalysisLoaded = 0;
   let periodicAnalysisTotal = 0;
+  let periodicLoadedPromise = null;
+  let requestHistoryCache = {}; // request_id -> [history]
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.2";
+  const APP_VERSION = "1.4.3";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -206,10 +209,10 @@
   // Essencial (bloqueante): requests + notifications - usado no dashboard
   async function loadAll() {
     try {
-      // Carga PARALELA de tudo que é leve (listas pequenas).
-      // Navegação fica instantânea porque os dados de referência já estão em memória.
-      // Só os campos pesados (resumo_analise, instructions, imagem) continuam lazy por registro.
-      const [reqData, notifData, domData, langData, nicheData, userData, delData] = await Promise.all([
+      // Carga PARALELA de tudo que é leve. Navegação e modais ficam instantâneos
+      // porque os dados (inclusive resumo_analise/instructions/histórico) já estão em memória.
+      // Só a IMAGEM (BLOB binário) continua lazy por registro.
+      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, periodicRaw] = await Promise.all([
         apiGet("requests.php"),
         apiGet("notifications.php"),
         apiGet("domains.php"),
@@ -217,6 +220,8 @@
         apiGet("niches.php"),
         apiGet("users.php"),
         apiGet("requests.php?action=deleted"),
+        apiGet("requests.php?action=history_all").catch(() => []),
+        apiGet("periodic_analysis.php").catch(() => []), // 403 p/ não-admin não deve quebrar o resto
       ]);
       requests = reqData;
       notifications = notifData;
@@ -225,8 +230,65 @@
       niches = nicheData;
       users = userData;
       deletedRequests = delData;
+      // Histórico de todas as solicitações em cache para modal instantâneo
+      requestHistoryCache = {};
+      (Array.isArray(histData) ? histData : []).forEach((h) => {
+        if (!requestHistoryCache[h.request_id]) requestHistoryCache[h.request_id] = [];
+        requestHistoryCache[h.request_id].push(h);
+      });
+      // Análise periódica: pré-carrega tudo e agrupa em memória (abre na hora)
+      buildPeriodicInMemory(periodicRaw);
     } catch (e) {
       console.error("Erro ao carregar dados:", e);
+    }
+  }
+
+  // Agrupa rows da periodic_analysis em memória (latest por dominio+id_post)
+  function buildPeriodicInMemory(raw) {
+    const rows = Array.isArray(raw) ? raw : (raw && raw.data ? raw.data : []);
+    const groupsMap = new Map();
+    rows.forEach((r) => {
+      const key = `${r.dominio}::${r.id_post ?? ""}`;
+      let g = groupsMap.get(key);
+      if (!g) { g = { key, sorted: [] }; groupsMap.set(key, g); }
+      g.sorted.push(r);
+    });
+    periodicAnalysisGroups = [];
+    groupsMap.forEach((g) => {
+      g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      periodicAnalysisGroups.push(g);
+    });
+    periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
+    // Cache de filtros (distinct) derivado dos dados em memória (sem rede)
+    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
+    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+  }
+
+  // Garante que a periodic esteja carregada (preload em loadAll ou sob demanda)
+  function ensurePeriodicLoaded() {
+    if (periodicAnalysisGroups.length) return Promise.resolve();
+    if (periodicLoadedPromise) return periodicLoadedPromise;
+    periodicLoadedPromise = apiGet("periodic_analysis.php")
+      .then((raw) => buildPeriodicInMemory(raw))
+      .catch(() => {})
+      .finally(() => { periodicLoadedPromise = null; });
+    return periodicLoadedPromise;
+  }
+
+  // Reconstrói periodicAnalysisAll a partir dos groups (após mutações locais)
+  function syncPeriodicAllFromGroups() {
+    periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
+    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
+    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+  }
+
+  // Recarrega a periodic do servidor (usado após reanálise em lote) silenciosamente
+  async function reloadPeriodicFromServer() {
+    try {
+      const raw = await apiGet("periodic_analysis.php");
+      buildPeriodicInMemory(raw);
+    } catch (e) {
+      console.error("Falha ao recarregar periódica:", e);
     }
   }
 
@@ -451,12 +513,7 @@
             if (is("admin") && view !== "compliance-analysis") {
               const payloadEvent = payload?.event || "";
               if (payloadEvent === "periodic") {
-                apiGet("periodic_analysis.php?limit=50&offset=0").then((res) => {
-                  const rows = Array.isArray(res) ? res : res.data || [];
-                  periodicAnalysisVisible = rows;
-                  periodicAnalysisLoaded = rows.length;
-                  periodicAnalysisTotal = Array.isArray(res) ? rows.length : res.total || 0;
-                }).catch(() => {});
+                reloadPeriodicFromServer().catch(() => {});
               }
             }
           }
@@ -1126,8 +1183,7 @@
 
   async function openComplianceModal(id, opts = {}) {
     let r = requests.find((x) => Number(x.id) === Number(id));
-    // Abre o modal NA HORA com o que já está em memória; detalhe pesado é buscado em background.
-    const needDetail = opts.resumo === undefined && r && Number(r.has_resumo) && r.resumo_analise === undefined;
+    // Dados já vieram no loadAll (resumo_analise na listagem). Modal abre INSTANTÂNEO.
     const resumo = opts.resumo !== undefined ? opts.resumo : r ? r.resumo_analise : "";
     const status = opts.status !== undefined ? opts.status : r ? r.status_compliance : "";
 
@@ -1147,21 +1203,6 @@
     // sejam roteados para a lógica de análise periódica
     modalEl.dataset.periodicKey = "";
     openModal("modalCompliance");
-
-    // Lazy: busca instruções/resumo pesado em background, sem travar a abertura
-    if (needDetail) {
-      try {
-        const detail = await apiGet(`requests.php?action=detail&id=${id}`);
-        Object.assign(r, detail);
-        const resumo2 = r.resumo_analise || "";
-        const status2 = r.status_compliance || "";
-        if (el) el.innerHTML = renderComplianceResumo(resumo2 || "—");
-        const has2 = !!status2 || (resumo2 && String(resumo2).trim() !== "");
-        if (btn) btn.style.display = opts.showReset !== false && has2 ? "" : "none";
-      } catch (e) {
-        console.error("Falha ao carregar resumo lazy:", e);
-      }
-    }
   }
 
   async function toggleComplianceHistory() {
@@ -1431,6 +1472,8 @@
         const infoEl = document.getElementById("periodicAnalysisInfo");
         if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
       }
+      // Mantém periodicAnalysisAll sincronizado com os groups (fonte da filtragem)
+      syncPeriodicAllFromGroups();
     } catch (e) {
       console.error("Falha ao atualizar análise silenciosamente:", e);
       // Fallback silencioso sem spinner visível na tabela de solicitações
@@ -1584,6 +1627,8 @@
         // Não mostra loading se já tinha dados (silencioso)
         const tbody = document.getElementById("periodicAnalysisBody");
         if (tbody && !hadPreviousBulkData) tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
+        // Recarrega do servidor (inclui as novas análises criadas) e reconstrói em memória
+        await reloadPeriodicFromServer();
         await fetchNextPeriodicPage();
         const tb = document.getElementById("periodicAnalysisBody");
         if (tb) {
@@ -2288,44 +2333,16 @@
     }
   }
 
-  // ---- Detail (lazy history) ----
+  // ---- Detail (dados already em memória: resumo/instructions/histórico pré-carregados) ----
   async function openDetail(id) {
     const r = requests.find((req) => req.id == id) || deletedRequests.find((req) => req.id == id);
     if (!r) return;
 
-    // Abre o modal NA HORA com o que já está em memória (lista leve).
-    // Campos pesados (instructions/resumo_analise) são buscados em background e preenchidos depois,
-    // sem travar a abertura do modal.
+    // Tudo já veio no loadAll: resumo_analise/instructions na listagem e histórico em cache.
+    // Modal abre INSTANTÂNEO, sem nenhuma chamada de rede.
+    r.history = requestHistoryCache[id] || [];
     renderDetailModal(r);
     openModal("modalDetail");
-
-    const needDetail = (r.instructions === undefined) || (Number(r.has_resumo) && r.resumo_analise === undefined);
-    if (needDetail) {
-      try {
-        const detail = await apiGet(`requests.php?action=detail&id=${id}`);
-        Object.assign(r, detail);
-        renderDetailModal(r); // re-renderiza já com instructions/resumo
-      } catch (e) {
-        console.error("Falha ao carregar detalhe lazy:", e);
-      }
-    }
-
-    // Lazy load history (já após abrir o modal)
-    if (r.history === undefined) {
-      try {
-        const hist = await apiGet(`requests.php?action=history&id=${id}`);
-        r.history = hist;
-        const newHtml = buildHistoryHtml(r);
-        const container = document.getElementById("detailHistoryContainer");
-        if (container) {
-          if (newHtml) container.outerHTML = newHtml;
-          else container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="text-align:center; padding:0.5rem; color:var(--text-muted)">Nenhum histórico</div>`;
-        }
-      } catch (e) {
-        const container = document.getElementById("detailHistoryContainer");
-        if (container) container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="color:var(--accent-danger); padding:1rem; text-align:center">Erro ao carregar histórico: ${escapeHtml(e.message)}</div>`;
-      }
-    }
     return;
   }
 
@@ -3410,42 +3427,21 @@
     return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
   }
 
+  // Reconstrói a lista visível filtrada a partir do cache em memória (sem rede).
+  // periodicAnalysisAll = latest row por grupo; filtros aplicados client-side.
   async function fetchNextPeriodicPage() {
     const statusFilter = $("#filterPeriodicStatus")?.value || "";
     const typeFilter = $("#filterPeriodicType")?.value || "";
     const domainFilter = $("#filterPeriodicDomain")?.value || "";
-    const params = new URLSearchParams({ limit: String(PERIODIC_PAGE_SIZE), offset: String(periodicAnalysisLoaded) });
-    if (statusFilter) params.set("status", statusFilter);
-    if (typeFilter) params.set("post_type", typeFilter);
-    if (domainFilter) params.set("dominio", domainFilter);
-    const res = await apiGet(`periodic_analysis.php?${params.toString()}`);
-    let rows, total;
-    if (Array.isArray(res)) {
-      rows = res;
-      total = rows.length;
-    } else {
-      rows = res.data || [];
-      // total só vem no primeiro fetch (offset=0). Em scrolls, mantém o total anterior.
-      total = res.total ?? periodicAnalysisTotal;
-    }
-    // Acumula para tabela (visual idêntico, só paginado no backend)
-    periodicAnalysisVisible.push(...rows);
-    if (total !== null && total !== undefined) periodicAnalysisTotal = total;
-    // Se voltou menos que o limite, chegou ao fim: ajusta total para o carregado
-    if (rows.length < PERIODIC_PAGE_SIZE) periodicAnalysisTotal = periodicAnalysisLoaded + rows.length;
-    // Mantém groups para histórico do modal (compatível com openComplianceModalForPeriodic)
-    rows.forEach((r) => {
-      const key = `${r.dominio}::${r.id_post ?? ""}`;
-      let g = periodicAnalysisGroups.find((x) => x.key === key);
-      if (!g) {
-        g = { key, sorted: [] };
-        periodicAnalysisGroups.push(g);
-      }
-      if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r);
-      g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    });
-    updateBulkUI();
-    return rows;
+    const filtered = periodicAnalysisAll.filter(
+      (r) =>
+        (!statusFilter || r.status_compliance === statusFilter) &&
+        (!typeFilter || r.post_type === typeFilter) &&
+        (!domainFilter || r.dominio === domainFilter),
+    );
+    periodicAnalysisVisible = filtered;
+    periodicAnalysisTotal = filtered.length;
+    return filtered;
   }
 
   async function renderPeriodicChunk() {
@@ -3515,13 +3511,14 @@
   async function renderComplianceAnalysis() {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
+    // Garante dados em memória (preload em loadAll ou fallback de rede, uma única vez)
+    await ensurePeriodicLoaded();
     const hadPreviousData = periodicAnalysisVisible.length > 0 && tbody.querySelectorAll("tr").length > 0 && !tbody.querySelector("#periodicScrollSentinel");
     const previousHTML = hadPreviousData ? tbody.innerHTML : "";
-    // Reset paginação e seleção
+    // Reset paginação e seleção (NÃO zera groups — groups são a fonte em memória)
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
     periodicAnalysisTotal = 0;
-    periodicAnalysisGroups = [];
     selectedPeriodicKeys.clear();
     updateBulkUI();
     if (periodicSentinelObserver) {
@@ -3533,26 +3530,20 @@
       tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     }
     try {
-      // Popula filtros distintos sem carregar todas as linhas (lazy, cacheado por sessão)
+      // Filtros distintos derivados do cache em memória (sem rede)
       const domainSelect = $("#filterPeriodicDomain");
       const currentDomain = domainSelect.value;
       const typeSelect = $("#filterPeriodicType");
       const currentType = typeSelect.value;
-      const [domainOpts, typeOpts] = await Promise.all([
-        periodicDomainOptionsCache !== null
-          ? periodicDomainOptionsCache
-          : (periodicDomainOptionsCache = apiGet("periodic_analysis.php?distinct=dominio").catch(() => [])),
-        periodicTypeOptionsCache !== null
-          ? periodicTypeOptionsCache
-          : (periodicTypeOptionsCache = apiGet("periodic_analysis.php?distinct=post_type").catch(() => [])),
-      ]);
+      const domainOpts = periodicDomainOptionsCache || [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
+      const typeOpts = periodicTypeOptionsCache || [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
       domainSelect.innerHTML = '<option value="">Todos Domínios</option>' + domainOpts.sort((a, b) => a.localeCompare(b)).map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
       domainSelect.value = currentDomain;
       const typeLabels = { post: "Post", page: "Página" };
       typeSelect.innerHTML = '<option value="">Todos Tipos</option>' + typeOpts.sort((a, b) => a.localeCompare(b)).map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`).join("");
       typeSelect.value = currentType;
 
-      // Primeira página já com filtros atuais
+      // Constrói lista visível filtrada em memória (instantâneo)
       await fetchNextPeriodicPage();
       if (!periodicAnalysisVisible.length) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;

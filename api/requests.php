@@ -17,10 +17,9 @@ function getRequestPublicFields(): string
     // wordcount, deadline, instructions, language, purpose, content_type,
     // niche_id, published_url, wp_edit_url, status_compliance, resumo_analise,
     // imagem MEDIUMBLOB, imagem_nome VARCHAR, created_at, updated_at
-    // `imagem` e `resumo_analise/instructions` NÃO são carregados na listagem (lazy)
-    // - imagem: flag `has_imagem` leve
-    // - resumo_analise: flag `has_resumo` leve (usado só p/ badge clicável)
-    // - instructions: só no detalhe/edit
+    // `imagem` (BLOB binário) continua fora da listagem (lazy via ?action=image).
+    // `resumo_analise` e `instructions` (texto) agora vêm na listagem para abrir
+    // modais de detalhe/compliance instantaneamente, sem fetch sob demanda.
     return '
         r.id,
         r.keyword,
@@ -31,6 +30,7 @@ function getRequestPublicFields(): string
         r.priority,
         r.wordcount,
         r.deadline,
+        r.instructions,
         r.language,
         r.purpose,
         r.content_type,
@@ -38,6 +38,7 @@ function getRequestPublicFields(): string
         r.published_url,
         r.wp_edit_url,
         r.status_compliance,
+        r.resumo_analise,
         r.created_at,
         r.updated_at,
         (r.imagem IS NOT NULL) AS has_imagem,
@@ -82,6 +83,8 @@ switch ($method) {
             getRequestImage();
         } elseif ($action === 'history') {
             getRequestHistory();
+        } elseif ($action === 'history_all') {
+            listAllHistory();
         } elseif ($action === 'detail') {
             getRequestDetail();
         } elseif ($action === 'deleted') {
@@ -254,7 +257,22 @@ function getRequestHistory(): void
     jsonResponse(200, $history);
 }
 
-// --- Detail (lazy, inclui instructions e resumo_analise) ---
+// --- History de TODAS as solicitações (pré-carregado no login p/ abrir modal instantâneo) ---
+function listAllHistory(): void
+{
+    $user = requireAuth();
+    $db = getDB();
+    $historyFields = getHistoryPublicFields();
+    $stmt = $db->query("SELECT {$historyFields}, u.name AS user_name
+                        FROM request_history rh
+                        LEFT JOIN users u ON rh.user_id = u.id
+                        ORDER BY rh.request_id, rh.created_at");
+    $history = $stmt->fetchAll();
+    foreach ($history as &$h) {
+        $h['changes'] = $h['changes'] ? json_decode($h['changes'], true) : [];
+    }
+    jsonResponse(200, $history);
+}
 function getRequestDetail(): void
 {
     $user = requireAuth();
