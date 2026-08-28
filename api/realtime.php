@@ -53,11 +53,38 @@ echo "event: connected\n";
 echo "data: " . json_encode($initialData, JSON_UNESCAPED_UNICODE) . "\n\n";
 @ob_flush(); @flush();
 
-$lastMtime = file_exists($storageFile) ? filemtime($storageFile) : 0;
 $startTime = time();
 $maxDuration = 30; // reconecta a cada 30s (EventSource reconecta automaticamente)
 $heartbeatInterval = 15; // envia : heartbeat a cada 15s para manter vivo
 $lastHeartbeat = time();
+
+// Função auxiliar para ler versão atual do storage (cria arquivo se não existir)
+function readWebhookVersion($storageFile) {
+    if (!file_exists($storageFile)) {
+        // Cria arquivo inicial para evitar filemtime/version nulo
+        $initial = [
+            'version' => 'init-' . time(),
+            'event' => 'init',
+            'payload' => null,
+            'triggered_at' => date('c'),
+        ];
+        @file_put_contents($storageFile, json_encode($initial, JSON_UNESCAPED_UNICODE), LOCK_EX);
+        return $initial;
+    }
+    $content = @file_get_contents($storageFile);
+    $data = @json_decode($content, true);
+    if (!$data || !isset($data['version'])) {
+        return ['version' => 'init-' . time(), 'event' => 'init', 'payload' => null, 'triggered_at' => date('c')];
+    }
+    return $data;
+}
+
+// Garante que storage existe antes do loop
+if (!is_dir(dirname($storageFile))) {
+    @mkdir(dirname($storageFile), 0775, true);
+}
+$currentData = readWebhookVersion($storageFile);
+$lastVersion = $currentData['version'] ?? $lastVersion;
 
 while (true) {
     // Timeout para reconexão limpa (evita PHP ficar preso para sempre)
@@ -76,29 +103,21 @@ while (true) {
     }
 
     clearstatcache(true, $storageFile);
-    $currentMtime = file_exists($storageFile) ? filemtime($storageFile) : 0;
+    $currentData = readWebhookVersion($storageFile);
+    $currentVersion = $currentData['version'] ?? '';
 
-    if ($currentMtime > $lastMtime) {
-        $lastMtime = $currentMtime;
-        $content = @file_get_contents($storageFile);
-        $data = @json_decode($content, true);
-        if (!$data) $data = ['version' => $currentMtime, 'event' => 'refresh'];
-
-        $version = $data['version'] ?? (string)$currentMtime;
-        // Evita reenviar mesma versão que cliente já tem
-        if ($version !== $lastVersion) {
-            $lastVersion = $version;
-            $payload = [
-                'event' => $data['event'] ?? 'refresh',
-                'version' => $version,
-                'payload' => $data['payload'] ?? null,
-                'triggered_at' => $data['triggered_at'] ?? date('c'),
-            ];
-            echo "id: $version\n";
-            echo "event: refresh\n";
-            echo "data: " . json_encode($payload, JSON_UNESCAPED_UNICODE) . "\n\n";
-            @ob_flush(); @flush();
-        }
+    if ($currentVersion !== $lastVersion) {
+        $lastVersion = $currentVersion;
+        $payload = [
+            'event' => $currentData['event'] ?? 'refresh',
+            'version' => $currentVersion,
+            'payload' => $currentData['payload'] ?? null,
+            'triggered_at' => $currentData['triggered_at'] ?? date('c'),
+        ];
+        echo "id: $currentVersion\n";
+        echo "event: refresh\n";
+        echo "data: " . json_encode($payload, JSON_UNESCAPED_UNICODE) . "\n\n";
+        @ob_flush(); @flush();
     }
 
     // Verifica se cliente desconectou

@@ -16,21 +16,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    jsonResponse(405, ['error' => 'Método não permitido. Use POST.']);
+if (!in_array($_SERVER['REQUEST_METHOD'], ['POST', 'GET'])) {
+    jsonResponse(405, ['error' => 'Método não permitido. Use POST ou GET.']);
 }
 
 // Secret: env WEBHOOK_SECRET ou fallback (trocar em produção via docker-compose env)
+// Em dev (APP_ENV=dev) permite sem secret para teste local
+$env = getenv('APP_ENV') ?: 'prod';
 $expectedSecret = getenv('WEBHOOK_SECRET') ?: 'articlehub-webhook-2026';
 $providedSecret = $_GET['secret'] ?? $_SERVER['HTTP_X_WEBHOOK_SECRET'] ?? '';
-// Também aceita Authorization: Bearer <secret>
 if (!$providedSecret && isset($_SERVER['HTTP_AUTHORIZATION'])) {
     if (preg_match('/Bearer\s+(.+)/i', $_SERVER['HTTP_AUTHORIZATION'], $m)) {
         $providedSecret = trim($m[1]);
     }
 }
-if ($providedSecret !== $expectedSecret) {
+if ($env !== 'dev' && $providedSecret !== $expectedSecret) {
     jsonResponse(401, ['error' => 'Secret inválido. Envie ?secret=XXX ou header X-Webhook-Secret.']);
+}
+if ($env === 'dev' && $providedSecret === '' && $expectedSecret !== '') {
+    // Em dev, se não enviou secret, usa o esperado para não bloquear teste local
+    $providedSecret = $expectedSecret;
 }
 
 $input = getInput();

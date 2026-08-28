@@ -32,7 +32,10 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.0";
+  const APP_VERSION = "1.4.1";
+  // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
+  let periodicDomainOptionsCache = null;
+  let periodicTypeOptionsCache = null;
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -472,14 +475,13 @@
                 console.error("Falha ao atualizar periódica via realtime:", e);
               }
             }
-            // Se o webhook foi para periódica mas usuário não está nela, atualiza cache em background para quando navegar
+            // Se o webhook foi específico de periódica mas usuário não está nela,
+            // atualiza cache em background para quando navegar (só em eventos "periodic")
             if (is("admin") && view !== "compliance-analysis") {
               const payloadEvent = payload?.event || "";
-              if (payloadEvent.includes("periodic") || payloadEvent === "refresh") {
-                // Pré-carrega periódica em background sem mexer na view atual
+              if (payloadEvent === "periodic") {
                 apiGet("periodic_analysis.php?limit=50&offset=0").then((res) => {
                   const rows = Array.isArray(res) ? res : res.data || [];
-                  // Atualiza cache silenciosamente
                   periodicAnalysisVisible = rows;
                   periodicAnalysisLoaded = rows.length;
                   periodicAnalysisTotal = Array.isArray(res) ? rows.length : res.total || 0;
@@ -3412,11 +3414,14 @@
       total = rows.length;
     } else {
       rows = res.data || [];
-      total = res.total ?? rows.length;
+      // total só vem no primeiro fetch (offset=0). Em scrolls, mantém o total anterior.
+      total = res.total ?? periodicAnalysisTotal;
     }
     // Acumula para tabela (visual idêntico, só paginado no backend)
     periodicAnalysisVisible.push(...rows);
-    periodicAnalysisTotal = total;
+    if (total !== null && total !== undefined) periodicAnalysisTotal = total;
+    // Se voltou menos que o limite, chegou ao fim: ajusta total para o carregado
+    if (rows.length < PERIODIC_PAGE_SIZE) periodicAnalysisTotal = periodicAnalysisLoaded + rows.length;
     // Mantém groups para histórico do modal (compatível com openComplianceModalForPeriodic)
     rows.forEach((r) => {
       const key = `${r.dominio}::${r.id_post ?? ""}`;
@@ -3517,14 +3522,18 @@
       tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     }
     try {
-      // Popula filtros distintos sem carregar todas as linhas (lazy)
+      // Popula filtros distintos sem carregar todas as linhas (lazy, cacheado por sessão)
       const domainSelect = $("#filterPeriodicDomain");
       const currentDomain = domainSelect.value;
       const typeSelect = $("#filterPeriodicType");
       const currentType = typeSelect.value;
       const [domainOpts, typeOpts] = await Promise.all([
-        apiGet("periodic_analysis.php?distinct=dominio").catch(() => []),
-        apiGet("periodic_analysis.php?distinct=post_type").catch(() => []),
+        periodicDomainOptionsCache !== null
+          ? periodicDomainOptionsCache
+          : (periodicDomainOptionsCache = apiGet("periodic_analysis.php?distinct=dominio").catch(() => [])),
+        periodicTypeOptionsCache !== null
+          ? periodicTypeOptionsCache
+          : (periodicTypeOptionsCache = apiGet("periodic_analysis.php?distinct=post_type").catch(() => [])),
       ]);
       domainSelect.innerHTML = '<option value="">Todos Domínios</option>' + domainOpts.sort((a, b) => a.localeCompare(b)).map((d) => `<option value="${escapeHtml(d)}">${escapeHtml(d)}</option>`).join("");
       domainSelect.value = currentDomain;

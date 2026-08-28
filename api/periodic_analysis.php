@@ -48,24 +48,31 @@ if ($method === 'GET') {
     if ($limit > 0) {
         $where = [];
         $params = [];
+        $whereLatest = [];
         if ($status !== '') { $where[] = 'pa.status_compliance = ?'; $params[] = $status; }
         if ($postType !== '') { $where[] = 'pa.post_type = ?'; $params[] = $postType; }
         if ($dominio !== '') { $where[] = 'pa.dominio = ?'; $params[] = $dominio; }
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
-        // Subquery para latest por grupo
-        $latestSub = '(SELECT MAX(id) as max_id FROM periodic_analysis GROUP BY dominio, id_post) AS latest';
+        // Subquery para latest por grupo (usa índice idx_periodic_group_latest)
+        $latestSub = '(SELECT dominio, id_post, MAX(id) AS max_id FROM periodic_analysis GROUP BY dominio, id_post) AS latest';
 
-        // Total agrupado (para "Mostrando X de Y")
-        $countSql = "SELECT COUNT(*) FROM periodic_analysis pa INNER JOIN $latestSub ON pa.id = latest.max_id $whereSql";
-        $stmt = $db->prepare($countSql);
-        $stmt->execute($params);
-        $total = (int)$stmt->fetchColumn();
+        // Total agrupado: só calcula quando offset=0 (troca de filtro), não em cada scroll.
+        // Em scrolls subsequentes o frontend mantém o total do primeiro fetch.
+        $total = null;
+        if ($offset === 0) {
+            $countSql = "SELECT COUNT(*) FROM periodic_analysis pa
+                         INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post = latest.id_post AND pa.id = latest.max_id
+                         $whereSql";
+            $stmt = $db->prepare($countSql);
+            $stmt->execute($params);
+            $total = (int)$stmt->fetchColumn();
+        }
 
-        // Dados paginados
+        // Dados paginados (usa índice idx_periodic_group_ordered para ORDER BY)
         $dataSql = "SELECT pa.*, d.url AS dominio_url
                     FROM periodic_analysis pa
-                    INNER JOIN $latestSub ON pa.id = latest.max_id
+                    INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post = latest.id_post AND pa.id = latest.max_id
                     LEFT JOIN domains d ON d.blog_name = pa.dominio
                     $whereSql
                     ORDER BY pa.created_at DESC, pa.id DESC

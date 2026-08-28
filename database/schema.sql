@@ -416,3 +416,4 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 -- Índices para performance (lazy load) - execute se ainda não existirem
 -- CREATE INDEX idx_periodic_dominio ON periodic_analysis (dominio);
 -- CREATE INDEX idx_periodic_status ON periodic_analysis (status_compliance);
+-- CREATE INDEX idx_periodic_dominio_post ON periodic_analysis (dominio, id_post);
