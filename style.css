@@ -991,6 +991,34 @@ select.filter-select option {
   box-shadow: inset 3px 0 0 var(--accent-primary);
 }
 
+.periodic-checkbox.row-hover-checkbox {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
+  display: none;
+  z-index: 1;
+}
+
+tr:hover .periodic-checkbox.row-hover-checkbox,
+tr.is-selected .periodic-checkbox.row-hover-checkbox,
+.periodic-checkbox.row-hover-checkbox:checked {
+  display: block !important;
+}
+
+tr:hover .periodic-date,
+tr.is-selected .periodic-date {
+  opacity: 0;
+}
+
+.periodic-date {
+  transition: opacity 0.15s ease;
+}
+
 .compliance-history-row {
   cursor: pointer;
 }

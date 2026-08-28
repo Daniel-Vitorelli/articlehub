@@ -31,7 +31,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.4";
+  const APP_VERSION = "1.3.5";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -1409,9 +1409,15 @@
     const selectAll = $("#periodicSelectAll");
     if (bulkCount) bulkCount.textContent = count;
     if (bulkBtn) {
-      bulkBtn.disabled = count === 0;
-      bulkBtn.style.opacity = count === 0 ? "0.5" : "1";
-      bulkBtn.style.pointerEvents = count === 0 ? "none" : "auto";
+      if (count === 0) {
+        bulkBtn.style.display = "none";
+        bulkBtn.disabled = true;
+      } else {
+        bulkBtn.style.display = "inline-flex";
+        bulkBtn.disabled = false;
+        bulkBtn.style.opacity = "1";
+        bulkBtn.style.pointerEvents = "auto";
+      }
     }
     if (selectAll) {
       const visibleKeys = periodicAnalysisVisible.map((r) => `${r.dominio}::${r.id_post}`);
@@ -1492,7 +1498,7 @@
         periodicAnalysisTotal = 0;
         periodicAnalysisGroups = [];
         const tbody = document.getElementById("periodicAnalysisBody");
-        if (tbody) tbody.innerHTML = `<tr><td colspan="9"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
+        if (tbody) tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
         await fetchNextPeriodicPage();
         const tb = document.getElementById("periodicAnalysisBody");
         if (tb) {
@@ -1801,8 +1807,14 @@
       document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
         cb.checked = checked;
         const k = cb.dataset.periodicKey;
-        if (checked) selectedPeriodicKeys.add(k);
-        else selectedPeriodicKeys.delete(k);
+        const tr = cb.closest("tr");
+        if (checked) {
+          selectedPeriodicKeys.add(k);
+          if (tr) tr.classList.add("is-selected");
+        } else {
+          selectedPeriodicKeys.delete(k);
+          if (tr) tr.classList.remove("is-selected");
+        }
       });
       updateBulkUI();
     });
@@ -1812,8 +1824,14 @@
       const cb = e.target.closest(".periodic-checkbox");
       if (!cb) return;
       const k = cb.dataset.periodicKey;
-      if (cb.checked) selectedPeriodicKeys.add(k);
-      else selectedPeriodicKeys.delete(k);
+      const tr = cb.closest("tr");
+      if (cb.checked) {
+        selectedPeriodicKeys.add(k);
+        if (tr) tr.classList.add("is-selected");
+      } else {
+        selectedPeriodicKeys.delete(k);
+        if (tr) tr.classList.remove("is-selected");
+      }
       updateBulkUI();
       e.stopPropagation();
     });
@@ -3257,9 +3275,11 @@
     const dateStr = formatDateTime(r.created_at);
     const isSelected = selectedPeriodicKeys.has(key);
     return `
-      <tr data-periodic-key="${escapeAttr(key)}">
-        <td style="text-align:center;"><input type="checkbox" class="periodic-checkbox" data-periodic-key="${escapeAttr(key)}" ${isSelected ? "checked" : ""} style="width:16px; height:16px; accent-color:var(--accent-primary); cursor:pointer;"></td>
-        <td style="white-space:nowrap">${dateStr}</td>
+      <tr data-periodic-key="${escapeAttr(key)}" class="${isSelected ? "is-selected" : ""}">
+        <td style="white-space:nowrap; position:relative; padding-left:28px;">
+          <input type="checkbox" class="periodic-checkbox row-hover-checkbox" data-periodic-key="${escapeAttr(key)}" ${isSelected ? "checked" : ""}>
+          <span class="periodic-date">${dateStr}</span>
+        </td>
         <td><div class="blog-name"><span class="blog-dot" style="background:${domainColor}"></span>${escapeHtml(r.dominio)}</div></td>
         <td>${r.id_post != null ? r.id_post : "—"}</td>
         <td>${typeBadge}</td>
@@ -3275,7 +3295,7 @@
   }
 
   function periodicSentinelRow() {
-    return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="9"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
+    return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
   }
 
   async function fetchNextPeriodicPage() {
@@ -3391,7 +3411,7 @@
       periodicSentinelObserver.disconnect();
       periodicSentinelObserver = null;
     }
-    tbody.innerHTML = `<tr><td colspan="9"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     try {
       // Popula filtros distintos sem carregar todas as linhas (lazy)
       const domainSelect = $("#filterPeriodicDomain");
@@ -3411,7 +3431,7 @@
       // Primeira página já com filtros atuais
       await fetchNextPeriodicPage();
       if (!periodicAnalysisVisible.length) {
-        tbody.innerHTML = `<tr><td colspan="9"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
         return;
       }
@@ -3419,7 +3439,7 @@
       renderPeriodicChunk();
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
-      tbody.innerHTML = `<tr><td colspan="9"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
     }
   }
 
