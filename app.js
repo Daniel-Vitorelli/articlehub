@@ -1126,28 +1126,16 @@
 
   async function openComplianceModal(id, opts = {}) {
     let r = requests.find((x) => Number(x.id) === Number(id));
-    // Lazy: se listagem leve não trouxe resumo_analise mas has_resumo indica que existe, busca detalhe
-    if (opts.resumo === undefined && r && Number(r.has_resumo) && r.resumo_analise === undefined) {
-      try {
-        const detail = await apiGet(`requests.php?action=detail&id=${id}`);
-        Object.assign(r, detail);
-      } catch (e) {
-        console.error("Falha ao carregar resumo lazy:", e);
-      }
-    }
-    // Re-busca após possível merge (caso tenha sido atualizado)
-    r = requests.find((x) => Number(x.id) === Number(id)) || r;
-    const resumo =
-      opts.resumo !== undefined ? opts.resumo : r ? r.resumo_analise : "";
-    const status =
-      opts.status !== undefined ? opts.status : r ? r.status_compliance : "";
+    // Abre o modal NA HORA com o que já está em memória; detalhe pesado é buscado em background.
+    const needDetail = opts.resumo === undefined && r && Number(r.has_resumo) && r.resumo_analise === undefined;
+    const resumo = opts.resumo !== undefined ? opts.resumo : r ? r.resumo_analise : "";
+    const status = opts.status !== undefined ? opts.status : r ? r.status_compliance : "";
+
     const el = $("#complianceResumo");
     if (el) el.innerHTML = renderComplianceResumo(resumo || "—");
     const hasCompliance = !!status || (resumo && String(resumo).trim() !== "");
     const btn = $("#btnResetCompliance");
-    if (btn)
-      btn.style.display =
-        opts.showReset !== false && hasCompliance ? "" : "none";
+    if (btn) btn.style.display = opts.showReset !== false && hasCompliance ? "" : "none";
     const histContainer = $("#complianceHistoryContainer");
     if (histContainer) histContainer.style.display = "none";
     const histBtn = $("#btnToggleComplianceHistory");
@@ -1159,6 +1147,21 @@
     // sejam roteados para a lógica de análise periódica
     modalEl.dataset.periodicKey = "";
     openModal("modalCompliance");
+
+    // Lazy: busca instruções/resumo pesado em background, sem travar a abertura
+    if (needDetail) {
+      try {
+        const detail = await apiGet(`requests.php?action=detail&id=${id}`);
+        Object.assign(r, detail);
+        const resumo2 = r.resumo_analise || "";
+        const status2 = r.status_compliance || "";
+        if (el) el.innerHTML = renderComplianceResumo(resumo2 || "—");
+        const has2 = !!status2 || (resumo2 && String(resumo2).trim() !== "");
+        if (btn) btn.style.display = opts.showReset !== false && has2 ? "" : "none";
+      } catch (e) {
+        console.error("Falha ao carregar resumo lazy:", e);
+      }
+    }
   }
 
   async function toggleComplianceHistory() {
@@ -1224,6 +1227,7 @@
   }
 
   async function openComplianceModalForPeriodic(key) {
+    const [dominio, idPost] = key.split("::");
     let group = periodicAnalysisGroups.find((g) => g.key === key);
     let latest = group ? group.sorted[0] : null;
     let historyRows = group ? group.sorted.slice(1).map((h) => ({
@@ -1231,53 +1235,66 @@
         status_compliance: h.status_compliance,
         resumo_analise: h.resumo_analise,
       })) : [];
-    // Se grupo não está em memória (paginação) ou só tem latest, busca histórico lazy
-    if (!group || group.sorted.length <= 1) {
-      const [dominio, idPost] = key.split("::");
-      try {
-        const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
-        if (rows && rows.length) {
-          rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-          latest = rows[0];
-          historyRows = rows.slice(1).map((h) => ({
-            created_at: h.created_at,
-            status_compliance: h.status_compliance,
-            resumo_analise: h.resumo_analise,
-          }));
-          // Atualiza cache para reuso
-          if (!group) {
-            group = { key, sorted: rows };
-            periodicAnalysisGroups.push(group);
-          } else {
-            // Merge histórico que faltava
-            rows.forEach((r) => {
-              if (!group.sorted.find((x) => x.id === r.id)) group.sorted.push(r);
-            });
-            group.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-          }
-        }
-      } catch (e) {
-        console.error("Falha ao carregar histórico periódico lazy:", e);
-      }
+
+    // Se já temos o latest em memória (grupo carregado), abre instantâneo
+    if (latest) {
+      await openComplianceModal(null, {
+        resumo: latest.resumo_analise,
+        status: latest.status_compliance,
+        historyRows,
+        showReset: true,
+      });
+      const modal = $("#modalCompliance");
+      modal.dataset.periodicKey = key;
+      modal.dataset.requestId = "";
+      return;
     }
-    if (!latest) return;
 
-    await openComplianceModal(null, {
-      resumo: latest.resumo_analise,
-      status: latest.status_compliance,
-      historyRows,
-      showReset: true,
-    });
+    // Sem dados em memória: abre NA HORA com "Carregando..." e busca histórico em background
+    if (!latest) {
+      await openComplianceModal(null, {
+        resumo: "Carregando histórico...",
+        status: "",
+        historyRows: [],
+        showReset: false,
+      });
+      const modal = $("#modalCompliance");
+      modal.dataset.periodicKey = key;
+      modal.dataset.requestId = "";
+    }
 
-    // IMPORTANTE: definir DEPOIS de openComplianceModal, pois ele limpa
-    // periodicKey por padrão (proteção para modais de requests)
-    const modal = $("#modalCompliance");
-    modal.dataset.periodicKey = key;
-    modal.dataset.requestId = "";
-
-    // O clique é roteado pelo handler GLOBAL de #btnResetCompliance,
-    // que despacha para handlePeriodicReanalyze quando periodicKey existe.
-    // Sem cloneNode/troca de handlers = impossível corromper o estado do botão.
+    // Busca histórico lazy sem travar a abertura
+    try {
+      const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
+      if (rows && rows.length) {
+        rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        latest = rows[0];
+        historyRows = rows.slice(1).map((h) => ({
+          created_at: h.created_at,
+          status_compliance: h.status_compliance,
+          resumo_analise: h.resumo_analise,
+        }));
+        // Preenche o modal já aberto
+        const el = $("#complianceResumo");
+        if (el) el.innerHTML = renderComplianceResumo(latest.resumo_analise || "—");
+        const btn = $("#btnResetCompliance");
+        const has2 = !!latest.status_compliance || (latest.resumo_analise && String(latest.resumo_analise).trim() !== "");
+        if (btn) btn.style.display = has2 ? "" : "none";
+        complianceHistoryProvider = historyRows;
+        // Atualiza cache para reuso
+        if (!group) {
+          group = { key, sorted: rows };
+          periodicAnalysisGroups.push(group);
+        } else {
+          rows.forEach((r) => {
+            if (!group.sorted.find((x) => x.id === r.id)) group.sorted.push(r);
+          });
+          group.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        }
+      }
+    } catch (e) {
+      console.error("Falha ao carregar histórico periódico lazy:", e);
+    }
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
@@ -2183,15 +2200,30 @@
     const r = requests.find((req) => req.id == id);
     if (!r || !canEdit(r)) return;
 
+    const doFill = () => fillEditForm(r);
     if (users.length === 0) {
       apiGet("users.php")
         .then((data) => {
           users = data;
-          fillEditForm(r);
+          doFill();
         })
-        .catch(() => fillEditForm(r));
+        .catch(() => doFill());
     } else {
-      fillEditForm(r);
+      doFill();
+    }
+
+    // Instruções são lazy (não vêm na listagem). Se ainda não carregadas,
+    // busca em background e preenche o campo SEM travar a abertura do modal (evita perder dados ao salvar).
+    if (r.instructions === undefined) {
+      apiGet(`requests.php?action=detail&id=${id}`)
+        .then((detail) => {
+          Object.assign(r, detail);
+          const f = document.querySelector('#formEditRequest [name="instructions"]');
+          if (f && document.getElementById("modalEdit")?.style.display !== "none") {
+            f.value = r.instructions || "";
+          }
+        })
+        .catch(() => {});
     }
   }
 
@@ -2261,16 +2293,43 @@
     const r = requests.find((req) => req.id == id) || deletedRequests.find((req) => req.id == id);
     if (!r) return;
 
-    // Lazy detail: listagem é leve (sem instructions/resumo_analise), busca sob demanda sem mudar visual
-    if (r.instructions === undefined || (Number(r.has_resumo) && r.resumo_analise === undefined)) {
+    // Abre o modal NA HORA com o que já está em memória (lista leve).
+    // Campos pesados (instructions/resumo_analise) são buscados em background e preenchidos depois,
+    // sem travar a abertura do modal.
+    renderDetailModal(r);
+    openModal("modalDetail");
+
+    const needDetail = (r.instructions === undefined) || (Number(r.has_resumo) && r.resumo_analise === undefined);
+    if (needDetail) {
       try {
         const detail = await apiGet(`requests.php?action=detail&id=${id}`);
         Object.assign(r, detail);
+        renderDetailModal(r); // re-renderiza já com instructions/resumo
       } catch (e) {
         console.error("Falha ao carregar detalhe lazy:", e);
       }
     }
 
+    // Lazy load history (já após abrir o modal)
+    if (r.history === undefined) {
+      try {
+        const hist = await apiGet(`requests.php?action=history&id=${id}`);
+        r.history = hist;
+        const newHtml = buildHistoryHtml(r);
+        const container = document.getElementById("detailHistoryContainer");
+        if (container) {
+          if (newHtml) container.outerHTML = newHtml;
+          else container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="text-align:center; padding:0.5rem; color:var(--text-muted)">Nenhum histórico</div>`;
+        }
+      } catch (e) {
+        const container = document.getElementById("detailHistoryContainer");
+        if (container) container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="color:var(--accent-danger); padding:1rem; text-align:center">Erro ao carregar histórico: ${escapeHtml(e.message)}</div>`;
+      }
+    }
+    return;
+  }
+
+  function renderDetailModal(r) {
     const blogName = r.blog_name || "—";
     const writerName = r.writer_name || "A definir";
     const requesterName = r.requester_name || "—";
@@ -2431,25 +2490,6 @@
         closeModal("modalDetail");
         openEditRequest(Number(footerEditBtn.dataset.editId));
       });
-    }
-
-    openModal("modalDetail");
-
-    // Lazy load history se ainda não carregado (N+1 removido da listagem)
-    if (r.history === undefined) {
-      try {
-        const hist = await apiGet(`requests.php?action=history&id=${id}`);
-        r.history = hist;
-        const newHtml = buildHistoryHtml(r);
-        const container = document.getElementById("detailHistoryContainer");
-        if (container) {
-          if (newHtml) container.outerHTML = newHtml;
-          else container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="text-align:center; padding:0.5rem; color:var(--text-muted)">Nenhum histórico</div>`;
-        }
-      } catch (e) {
-        const container = document.getElementById("detailHistoryContainer");
-        if (container) container.innerHTML = `<h4>📜 Histórico de Alterações</h4><div style="color:var(--accent-danger); padding:1rem; text-align:center">Erro ao carregar histórico: ${escapeHtml(e.message)}</div>`;
-      }
     }
   }
 
