@@ -30,12 +30,13 @@
   let periodicAnalysisTotal = 0;
   let periodicLoadedPromise = null;
   let requestHistoryCache = {}; // request_id -> [history]
+  let complianceHistoryCache = {}; // request_id -> [compliance_history]
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.3";
+  const APP_VERSION = "1.4.4";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -212,7 +213,7 @@
       // Carga PARALELA de tudo que é leve. Navegação e modais ficam instantâneos
       // porque os dados (inclusive resumo_analise/instructions/histórico) já estão em memória.
       // Só a IMAGEM (BLOB binário) continua lazy por registro.
-      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, periodicRaw] = await Promise.all([
+      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, compHistData, periodicRaw] = await Promise.all([
         apiGet("requests.php"),
         apiGet("notifications.php"),
         apiGet("domains.php"),
@@ -221,6 +222,7 @@
         apiGet("users.php"),
         apiGet("requests.php?action=deleted"),
         apiGet("requests.php?action=history_all").catch(() => []),
+        apiGet("compliance.php?action=history_all").catch(() => []),
         apiGet("periodic_analysis.php").catch(() => []), // 403 p/ não-admin não deve quebrar o resto
       ]);
       requests = reqData;
@@ -235,6 +237,12 @@
       (Array.isArray(histData) ? histData : []).forEach((h) => {
         if (!requestHistoryCache[h.request_id]) requestHistoryCache[h.request_id] = [];
         requestHistoryCache[h.request_id].push(h);
+      });
+      // Histórico de compliance em cache para modal instantâneo
+      complianceHistoryCache = {};
+      (Array.isArray(compHistData) ? compHistData : []).forEach((h) => {
+        if (!complianceHistoryCache[h.request_id]) complianceHistoryCache[h.request_id] = [];
+        complianceHistoryCache[h.request_id].push(h);
       });
       // Análise periódica: pré-carrega tudo e agrupa em memória (abre na hora)
       buildPeriodicInMemory(periodicRaw);
@@ -1196,7 +1204,7 @@
     if (histContainer) histContainer.style.display = "none";
     const histBtn = $("#btnToggleComplianceHistory");
     if (histBtn) histBtn.textContent = "📜 Ver Histórico";
-    complianceHistoryProvider = opts.historyRows || null;
+    complianceHistoryProvider = opts.historyRows || (id ? (complianceHistoryCache[id] || null) : null);
     const modalEl = document.getElementById("modalCompliance");
     modalEl.dataset.requestId = id || "";
     // Limpa contexto periódico: garante que modais de requests nunca
@@ -1219,7 +1227,13 @@
           document.getElementById("modalCompliance").dataset.requestId,
         );
         if (!id) return;
-        await loadComplianceHistory(id);
+        // Cache pré-carregado no login → instantâneo; senão busca sob demanda
+        const cached = complianceHistoryCache[id];
+        if (cached) {
+          renderComplianceHistoryRows(cached);
+        } else {
+          await loadComplianceHistory(id);
+        }
       }
       container.style.display = "block";
       btn.textContent = "📜 Ocultar Histórico";
@@ -1937,20 +1951,26 @@
   const selectAll = $("#periodicSelectAll");
   if (selectAll)
     selectAll.addEventListener("change", (e) => {
-      const checked = e.target.checked;
+      // Toggle real: se já há seleção -> limpa TUDO (deselecionar todas de uma vez);
+      // se não há -> seleciona todas as linhas carregadas (visíveis e fora da tela).
+      const hadSelection = selectedPeriodicKeys.size > 0;
+      if (hadSelection) {
+        selectedPeriodicKeys.clear();
+      } else {
+        periodicAnalysisVisible.forEach((r) => {
+          selectedPeriodicKeys.add(`${r.dominio}::${r.id_post ?? ""}`);
+        });
+      }
+      // Sincroniza checkboxes e linhas já renderizadas no DOM
       document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
-        cb.checked = checked;
         const k = cb.dataset.periodicKey;
         const tr = cb.closest("tr");
-        if (checked) {
-          selectedPeriodicKeys.add(k);
-          if (tr) tr.classList.add("is-selected");
-        } else {
-          selectedPeriodicKeys.delete(k);
-          if (tr) tr.classList.remove("is-selected");
-        }
+        const on = selectedPeriodicKeys.has(k);
+        cb.checked = on;
+        if (tr) tr.classList.toggle("is-selected", on);
       });
       updateBulkUI();
+      e.target.indeterminate = false;
     });
   const periodicBodyForCheck = document.getElementById("periodicAnalysisBody");
   if (periodicBodyForCheck) {
