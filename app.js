@@ -31,7 +31,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.3.6";
+  const APP_VERSION = "1.3.7";
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -1491,14 +1491,17 @@
       btn.style.pointerEvents = "none";
     }
     if (successCount > 0) {
-      // Recarrega silenciosamente sem mostrar loading na tabela de solicitações
+      // Recarrega silenciosamente (sem spinner visível) - mantém dados atuais até novo chegar
+      const hadPreviousBulkData = periodicAnalysisVisible.length > 0;
+      const previousBulkHTML = hadPreviousBulkData ? document.getElementById("periodicAnalysisBody")?.innerHTML : "";
       try {
         periodicAnalysisVisible = [];
         periodicAnalysisLoaded = 0;
         periodicAnalysisTotal = 0;
         periodicAnalysisGroups = [];
+        // Não mostra loading se já tinha dados (silencioso)
         const tbody = document.getElementById("periodicAnalysisBody");
-        if (tbody) tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
+        if (tbody && !hadPreviousBulkData) tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
         await fetchNextPeriodicPage();
         const tb = document.getElementById("periodicAnalysisBody");
         if (tb) {
@@ -1523,9 +1526,13 @@
         }
       } catch (e) {
         console.error("Falha ao recarregar após bulk:", e);
+        if (hadPreviousBulkData && previousBulkHTML) {
+          const tb = document.getElementById("periodicAnalysisBody");
+          if (tb) tb.innerHTML = previousBulkHTML;
+        }
       }
-      alert(`${successCount} reanálise(s) criada(s)${failCount ? `, ${failCount} falha(s)` : ""}.`);
-    } else if (failCount) {
+    }
+    if (failCount) {
       alert(`Falha ao reanalisar: ${failCount} erro(s).`);
     }
   }
@@ -3440,8 +3447,37 @@
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
         return;
       }
-      tbody.innerHTML = "";
-      renderPeriodicChunk();
+      if (hadPreviousData) {
+        // Silencioso: substitui sem mostrar vazio/spinner, usuário nem percebe recarregando
+        const holder = document.createElement("tbody");
+        const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
+        holder.innerHTML = toRender.map(periodicRowHtml).join("");
+        tbody.innerHTML = "";
+        while (holder.firstChild) tbody.appendChild(holder.firstChild);
+        periodicAnalysisLoaded = toRender.length;
+        const infoEl = document.getElementById("periodicAnalysisInfo");
+        if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+        if (periodicAnalysisLoaded < periodicAnalysisTotal) {
+          tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+          if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+          periodicSentinelObserver = new IntersectionObserver(
+            (entries) => {
+              if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+            },
+            { rootMargin: PERIODIC_SENTINEL_MARGIN },
+          );
+          periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
+        } else {
+          if (periodicSentinelObserver) {
+            periodicSentinelObserver.disconnect();
+            periodicSentinelObserver = null;
+          }
+        }
+        updateBulkUI();
+      } else {
+        tbody.innerHTML = "";
+        renderPeriodicChunk();
+      }
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
       if (hadPreviousData && previousHTML) {
