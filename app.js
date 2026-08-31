@@ -36,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.7";
+  const APP_VERSION = "1.4.8";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1621,6 +1621,7 @@
     }
     let successCount = 0;
     let failCount = 0;
+    let successResults = []; // [{ key, latest, res }]
     const concurrency = 3;
     for (let i = 0; i < keys.length; i += concurrency) {
       const chunk = keys.slice(i, i + concurrency);
@@ -1649,8 +1650,10 @@
         }),
       );
       results.forEach((r) => {
-        if (r.status === "fulfilled") successCount++;
-        else {
+        if (r.status === "fulfilled") {
+          successCount++;
+          successResults.push(r.value);
+        } else {
           failCount++;
           console.error("Falha ao reanalisar", r.reason);
         }
@@ -1671,30 +1674,67 @@
       btn.style.pointerEvents = "none";
     }
     if (successCount > 0) {
-      // Recarrega silenciosamente (sem spinner visível) - mantém dados atuais até novo chegar
-      const hadPreviousBulkData = periodicAnalysisVisible.length > 0;
-      const previousBulkHTML = hadPreviousBulkData ? document.getElementById("periodicAnalysisBody")?.innerHTML : "";
+      // ATUALIZAÇÃO OTIMISTA: insere as novas linhas na memória sem buscar tudo do servidor.
       try {
-        periodicAnalysisVisible = [];
-        periodicAnalysisLoaded = 0;
-        periodicAnalysisTotal = 0;
-        periodicAnalysisGroups = [];
-        // Não mostra loading se já tinha dados (silencioso)
-        const tbody = document.getElementById("periodicAnalysisBody");
-        if (tbody && !hadPreviousBulkData) tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Atualizando...</div></td></tr>`;
-        // Recarrega do servidor (inclui as novas análises criadas) e reconstrói em memória
-        await reloadPeriodicFromServer();
-        await fetchNextPeriodicPage();
+        const now = new Date();
+        const pad = (n) => String(n).padStart(2, "0");
+        const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+        successResults.forEach(({ key, latest, res }) => {
+          const newRow = {
+            id: res.id,
+            id_post: latest.id_post,
+            post_type: latest.post_type,
+            dominio: latest.dominio,
+            dominio_url: latest.dominio_url,
+            status_compliance: "nao_analisado",
+            resumo_analise: "esperando re-analise",
+            publish_status: latest.publish_status || "draft",
+            created_at: createdAt,
+          };
+
+          // Atualiza/insere o grupo
+          let group = periodicAnalysisGroups.find((g) => g.key === key);
+          if (group) {
+            group.sorted.unshift(newRow);
+          } else {
+            group = { key, sorted: [newRow] };
+            periodicAnalysisGroups.push(group);
+          }
+
+          // Atualiza periodicAnalysisVisible (lista filtrada em memória)
+          const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
+          if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
+
+          // Aplica filtro atual
+          const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
+          const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
+          const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
+          const matchesFilter =
+            (!statusFilter || newRow.status_compliance === statusFilter) &&
+            (!typeFilter || newRow.post_type === typeFilter) &&
+            (!domainFilter || newRow.dominio === domainFilter);
+          if (matchesFilter) {
+            periodicAnalysisVisible.unshift(newRow);
+          }
+        });
+
+        // Reordena e mantém periodicAnalysisAll sincronizado
+        periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        syncPeriodicAllFromGroups();
+
+        // Re-renderiza o primeiro chunk instantaneamente
         const tb = document.getElementById("periodicAnalysisBody");
         if (tb) {
-          tb.innerHTML = "";
+          const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
           const holder = document.createElement("tbody");
-          holder.innerHTML = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length)).map(periodicRowHtml).join("");
+          holder.innerHTML = toRender.map(periodicRowHtml).join("");
+          tb.innerHTML = "";
           while (holder.firstChild) tb.appendChild(holder.firstChild);
-          periodicAnalysisLoaded = Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length);
+          periodicAnalysisLoaded = toRender.length;
           const infoEl = document.getElementById("periodicAnalysisInfo");
-          if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
-          if (periodicAnalysisLoaded < periodicAnalysisTotal) {
+          if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
+          if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
             tb.insertAdjacentHTML("beforeend", periodicSentinelRow());
             if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
             periodicSentinelObserver = new IntersectionObserver(
@@ -1707,11 +1747,7 @@
           }
         }
       } catch (e) {
-        console.error("Falha ao recarregar após bulk:", e);
-        if (hadPreviousBulkData && previousBulkHTML) {
-          const tb = document.getElementById("periodicAnalysisBody");
-          if (tb) tb.innerHTML = previousBulkHTML;
-        }
+        console.error("Falha ao aplicar atualização otimista após bulk:", e);
       }
     }
     if (failCount) {
