@@ -36,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.11";
+  const APP_VERSION = "1.4.12";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -268,19 +268,32 @@
   // Não aguarda: quando o usuário clicar na aba, já estará em memória.
   function preloadPeriodicInBackground() {
     if (periodicLoadedPromise) return;
-    periodicLoadedPromise = apiGet("periodic_analysis.php")
-      .then((raw) => buildPeriodicInMemory(raw))
+    periodicLoadedPromise = loadAllPeriodicPaginated()
+      .then((allRows) => buildPeriodicInMemory(allRows))
       .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
   }
 
-  // Garante que a análise periódica esteja em memória — como já pré-carregamos,
-  // quase sempre retorna instantâneo do cache (sem rede).
+  async function loadAllPeriodicPaginated() {
+    const allRows = [];
+    let offset = 0;
+    const pageSize = 100;
+    while (true) {
+      const raw = await apiGet(`periodic_analysis.php?limit=${pageSize}&offset=${offset}`);
+      const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+      if (!rows.length) break;
+      allRows.push(...rows);
+      if (rows.length < pageSize) break;
+      offset += pageSize;
+    }
+    return allRows;
+  }
+
   function ensurePeriodicLoaded() {
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
-    periodicLoadedPromise = apiGet("periodic_analysis.php")
-      .then((raw) => buildPeriodicInMemory(raw))
+    periodicLoadedPromise = loadAllPeriodicPaginated()
+      .then((allRows) => buildPeriodicInMemory(allRows))
       .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
     return periodicLoadedPromise;
@@ -809,9 +822,10 @@
     const req = requests.find((r) => r.id === id);
     if (!req) return;
 
-    req.status_compliance = null;
+    req.status_compliance = "nao_analisado";
     req.resumo_analise = null;
     req.instructions = req.instructions || "";
+    req.has_resumo = 0;
 
     const color = req.color || "#7f5af0";
     const blogName = req.blog_name || "—";
@@ -3596,19 +3610,23 @@
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
 
-    // Se ainda não tem dados em memória, mostra spinner (caso ainda esteja pré-carregando)
     const isAlreadyLoaded = periodicAnalysisAll.length > 0;
+
+    // Se NÃO tinha dados antes, mostra spinner (pode estar pré-carregando)
     if (!isAlreadyLoaded) {
       tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     }
 
-    // Garante dados em memória (preload em background em showApp ou fallback de rede)
+    // Espera dados do servidor (ou do preload em background)
     await ensurePeriodicLoaded();
 
-    const hadPreviousData = periodicAnalysisVisible.length > 0 && tbody.querySelectorAll("tr").length > 0 && !tbody.querySelector("#periodicScrollSentinel");
-    const previousHTML = hadPreviousData ? tbody.innerHTML : "";
-    // Reset paginação (NÃO zera groups — groups são a fonte em memória).
-    // Seleção só é limpa em carga explícita do usuário; em refresh de fundo é preservada.
+    // Verifica novamente: se agora TEM dados, renderiza. Se NÃO, mostra empty.
+    if (periodicAnalysisAll.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+      $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
+      return;
+    }
+
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
     periodicAnalysisTotal = 0;
@@ -3619,7 +3637,6 @@
       periodicSentinelObserver = null;
     }
     try {
-      // Filtros distintos derivados do cache em memória (sem rede)
       const domainSelect = $("#filterPeriodicDomain");
       const currentDomain = domainSelect.value;
       const typeSelect = $("#filterPeriodicType");
@@ -3632,51 +3649,19 @@
       typeSelect.innerHTML = '<option value="">Todos Tipos</option>' + typeOpts.sort((a, b) => a.localeCompare(b)).map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`).join("");
       typeSelect.value = currentType;
 
-      // Constrói lista visível filtrada em memória (instantâneo)
       await fetchNextPeriodicPage();
+
       if (!periodicAnalysisVisible.length) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
         return;
       }
-      if (hadPreviousData) {
-        // Silencioso: substitui sem mostrar vazio/spinner, usuário nem percebe recarregando
-        const holder = document.createElement("tbody");
-        const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
-        holder.innerHTML = toRender.map(periodicRowHtml).join("");
-        tbody.innerHTML = "";
-        while (holder.firstChild) tbody.appendChild(holder.firstChild);
-        periodicAnalysisLoaded = toRender.length;
-        const infoEl = document.getElementById("periodicAnalysisInfo");
-        if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
-        if (periodicAnalysisLoaded < periodicAnalysisTotal) {
-          tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-          if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-          periodicSentinelObserver = new IntersectionObserver(
-            (entries) => {
-              if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-            },
-            { rootMargin: PERIODIC_SENTINEL_MARGIN },
-          );
-          periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
-        } else {
-          if (periodicSentinelObserver) {
-            periodicSentinelObserver.disconnect();
-            periodicSentinelObserver = null;
-          }
-        }
-        updateBulkUI();
-      } else {
-        tbody.innerHTML = "";
-        renderPeriodicChunk();
-      }
+
+      tbody.innerHTML = "";
+      renderPeriodicChunk();
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
-      if (hadPreviousData && previousHTML) {
-        tbody.innerHTML = previousHTML;
-      } else {
-        tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar</div></td></tr>`;
-      }
+      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar análises</div></td></tr>`;
     }
   }
 
