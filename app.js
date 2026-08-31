@@ -28,6 +28,7 @@
   let periodicAnalysisAll = []; // latest row por grupo (sem filtro) — fonte para filtragem client-side
   let periodicAnalysisLoaded = 0;
   let periodicAnalysisTotal = 0;
+  let periodicDirty = true; // carrega sob demanda quando a view é aberta
   let periodicLoadedPromise = null;
   let requestHistoryCache = {}; // request_id -> [history]
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
@@ -36,7 +37,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.5";
+  const APP_VERSION = "1.4.6";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -213,7 +214,9 @@
       // Carga PARALELA de tudo que é leve. Navegação e modais ficam instantâneos
       // porque os dados (inclusive resumo_analise/instructions/histórico) já estão em memória.
       // Só a IMAGEM (BLOB binário) continua lazy por registro.
-      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, compHistData, periodicRaw] = await Promise.all([
+      // A análise periódica NÃO é carregada aqui (lazy): é buscada só ao abrir a view
+      // de compliance-analysis, via ensurePeriodicLoaded(). Mantém o login leve.
+      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, compHistData] = await Promise.all([
         apiGet("requests.php"),
         apiGet("notifications.php"),
         apiGet("domains.php"),
@@ -223,7 +226,6 @@
         apiGet("requests.php?action=deleted"),
         apiGet("requests.php?action=history_all").catch(() => []),
         apiGet("compliance.php?action=history_all").catch(() => []),
-        apiGet("periodic_analysis.php").catch(() => []), // 403 p/ não-admin não deve quebrar o resto
       ]);
       requests = reqData;
       notifications = notifData;
@@ -236,8 +238,8 @@
       requestHistoryCache = buildHistoryCache(histData);
       // Histórico de compliance em cache para modal instantâneo
       complianceHistoryCache = buildHistoryCache(compHistData);
-      // Análise periódica: pré-carrega tudo e agrupa em memória (abre na hora)
-      buildPeriodicInMemory(periodicRaw);
+      // Análise periódica: NÃO pré-carregada (lazy). ensurePeriodicLoaded() fará o fetch
+      // apenas quando a view de compliance-analysis for aberta.
     } catch (e) {
       console.error("Erro ao carregar dados:", e);
     }
@@ -264,9 +266,12 @@
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
   }
 
-  // Garante que a periodic esteja carregada (preload em loadAll ou sob demanda)
-  function ensurePeriodicLoaded() {
-    if (periodicAnalysisGroups.length) return Promise.resolve();
+  // Garante que a análise periódica esteja carregada (sob demanda) e fresca.
+  // Se já houver dados em memória e a flag de "sujo" estiver falsa, retorna o cache instantâneo.
+  // Se o flag estiver verdadeiro ou não houver dados, busca do servidor.
+  async function ensurePeriodicLoaded() {
+    if (periodicAnalysisGroups.length && !periodicDirty) return Promise.resolve();
+    periodicDirty = false;
     if (periodicLoadedPromise) return periodicLoadedPromise;
     periodicLoadedPromise = apiGet("periodic_analysis.php")
       .then((raw) => buildPeriodicInMemory(raw))
@@ -282,9 +287,10 @@
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
   }
 
-  // Recarrega a periodic do servidor (usado após reanálise em lote) silenciosamente
+  // Recarrega a análise periódica do servidor (usado após reanálise em lote) silenciosamente
   async function reloadPeriodicFromServer() {
     try {
+      periodicDirty = false;
       const raw = await apiGet("periodic_analysis.php");
       buildPeriodicInMemory(raw);
     } catch (e) {
@@ -491,14 +497,15 @@
       } catch (e) {
         console.error("Falha ao atualizar solicitações via realtime:", e);
       }
-      // Mantém a periódica em cache em background (sem UI) para quando navegar
-      reloadPeriodicFromServer().catch(() => {});
+      // Mantém a periódica como "suja" — será recarregada sob demanda quando
+      // o usuário abrir a view de compliance-analysis (lazy).
+      periodicDirty = true;
     } else if (view === "trash") {
       try {
         deletedRequests = await apiGet("requests.php?action=deleted");
         renderTrash();
       } catch (_) {}
-      reloadPeriodicFromServer().catch(() => {});
+      periodicDirty = true;
     } else if (view === "compliance-analysis") {
       try {
         // Re-busca TUDO da periódica no servidor (não usa cache obsoleto) e atualiza a tela
@@ -1805,15 +1812,7 @@
   async function restoreRequest(id) {
     try {
       await apiPut("requests.php?action=restore", { id });
-      // Atualiza ambas as listas (requests e lixeira) sem recarregar tudo
-      const [reqData, delData] = await Promise.all([
-        apiGet("requests.php"),
-        apiGet("requests.php?action=deleted"),
-      ]);
-      requests = reqData;
-      deletedRequests = delData;
-      renderTrash();
-      updateNotifBadge();
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro ao recuperar solicitação: " + err.message);
     }
@@ -2620,8 +2619,7 @@
         status: newStatus,
         ...extraData,
       });
-      await loadAll();
-      refreshCurrentView();
+      await silentRefreshActiveView();
       openDetail(id);
     } catch (err) {
       alert("Erro: " + err.message);
@@ -2639,10 +2637,8 @@
     if (!canSoftDelete) return;
     if (!confirm("Mover esta solicitação para a lixeira?")) return;
     try {
-      // Always soft delete from requests page (force=0)
       await apiDelete(`requests.php?id=${id}&force=0`);
-      await loadAll();
-      refreshCurrentView();
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro: " + err.message);
     }
@@ -2652,8 +2648,7 @@
     if (!canDelete()) return; // Only true admins can hard delete
     try {
       await apiDelete(`requests.php?id=${id}&force=1`);
-      deletedRequests = await apiGet("requests.php?action=deleted");
-      refreshCurrentView();
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro: " + err.message);
     }
@@ -2828,10 +2823,18 @@
       statusText.textContent = "✅ Artigo publicado com sucesso!";
       urlInput.className = "publish-url-input valid";
 
-      setTimeout(async () => {
+      // Atualiza a view atual em silêncio (sem esperar timeout)
+      await silentRefreshActiveView();
+
+      setTimeout(() => {
         closeModal("modalPublish");
-        await loadAll();
-        refreshCurrentView();
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span>?</span> Publicar';
+        submitBtn.classList.remove("show");
+        urlInput.value = "";
+        urlInput.className = "publish-url-input";
+        statusEl.className = "";
+        statusText.textContent = "";
       }, 1500);
     } catch (err) {
       showPublishError(err.message);
@@ -3121,7 +3124,8 @@
         await apiPost("languages.php", data);
       }
       closeModal("modalLanguage");
-      await loadAll();
+      // Refetch leve apenas da lista de idiomas
+      languages = await apiGet("languages.php");
       renderLanguages();
     } catch (err) {
       alert("Erro: " + err.message);
@@ -3135,7 +3139,7 @@
     if (!confirm("Excluir este idioma?")) return;
     try {
       await apiDelete(`languages.php?id=${id}`);
-      await loadAll();
+      languages = await apiGet("languages.php");
       renderLanguages();
     } catch (err) {
       alert("Erro: " + err.message);
@@ -3214,7 +3218,8 @@
         await apiPost("niches.php", data);
       }
       closeModal("modalNiche");
-      await loadAll();
+      // Refetch leve apenas da lista de nichos
+      niches = await apiGet("niches.php");
       renderNiches();
     } catch (err) {
       alert("Erro: " + err.message);
@@ -3228,7 +3233,7 @@
     if (!confirm("Excluir este nicho?")) return;
     try {
       await apiDelete(`niches.php?id=${id}`);
-      await loadAll();
+      niches = await apiGet("niches.php");
       renderNiches();
     } catch (err) {
       alert("Erro: " + err.message);
@@ -3770,10 +3775,7 @@
       });
 
       closeModal("modalCompose");
-      notifications = await apiGet("notifications.php");
-      updateNotifBadge();
-      updateMsgBadge();
-      refreshCurrentView();
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro: " + err.message);
     }
