@@ -28,7 +28,6 @@
   let periodicAnalysisAll = []; // latest row por grupo (sem filtro) — fonte para filtragem client-side
   let periodicAnalysisLoaded = 0;
   let periodicAnalysisTotal = 0;
-  let periodicDirty = true; // carrega sob demanda quando a view é aberta
   let periodicLoadedPromise = null;
   let requestHistoryCache = {}; // request_id -> [history]
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
@@ -37,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.6";
+  const APP_VERSION = "1.4.7";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -214,8 +213,7 @@
       // Carga PARALELA de tudo que é leve. Navegação e modais ficam instantâneos
       // porque os dados (inclusive resumo_analise/instructions/histórico) já estão em memória.
       // Só a IMAGEM (BLOB binário) continua lazy por registro.
-      // A análise periódica NÃO é carregada aqui (lazy): é buscada só ao abrir a view
-      // de compliance-analysis, via ensurePeriodicLoaded(). Mantém o login leve.
+      // A análise periódica é pré-carregada em background logo após (showApp → preloadPeriodicInBackground).
       const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, compHistData] = await Promise.all([
         apiGet("requests.php"),
         apiGet("notifications.php"),
@@ -238,8 +236,8 @@
       requestHistoryCache = buildHistoryCache(histData);
       // Histórico de compliance em cache para modal instantâneo
       complianceHistoryCache = buildHistoryCache(compHistData);
-      // Análise periódica: NÃO pré-carregada (lazy). ensurePeriodicLoaded() fará o fetch
-      // apenas quando a view de compliance-analysis for aberta.
+      // Análise periódica: pré-carregada em background (showApp → preloadPeriodicInBackground)
+      // para estar pronta quando o usuário abrir a view de compliance-analysis.
     } catch (e) {
       console.error("Erro ao carregar dados:", e);
     }
@@ -266,12 +264,20 @@
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
   }
 
-  // Garante que a análise periódica esteja carregada (sob demanda) e fresca.
-  // Se já houver dados em memória e a flag de "sujo" estiver falsa, retorna o cache instantâneo.
-  // Se o flag estiver verdadeiro ou não houver dados, busca do servidor.
-  async function ensurePeriodicLoaded() {
-    if (periodicAnalysisGroups.length && !periodicDirty) return Promise.resolve();
-    periodicDirty = false;
+  // Pré-carrega análise periódica em background após o login (não-bloqueante).
+  // Não aguarda: quando o usuário clicar na aba, já estará em memória.
+  function preloadPeriodicInBackground() {
+    if (periodicLoadedPromise) return;
+    periodicLoadedPromise = apiGet("periodic_analysis.php")
+      .then((raw) => buildPeriodicInMemory(raw))
+      .catch(() => {})
+      .finally(() => { periodicLoadedPromise = null; });
+  }
+
+  // Garante que a análise periódica esteja em memória — como já pré-carregamos,
+  // quase sempre retorna instantâneo do cache (sem rede).
+  function ensurePeriodicLoaded() {
+    if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
     periodicLoadedPromise = apiGet("periodic_analysis.php")
       .then((raw) => buildPeriodicInMemory(raw))
@@ -290,7 +296,6 @@
   // Recarrega a análise periódica do servidor (usado após reanálise em lote) silenciosamente
   async function reloadPeriodicFromServer() {
     try {
-      periodicDirty = false;
       const raw = await apiGet("periodic_analysis.php");
       buildPeriodicInMemory(raw);
     } catch (e) {
@@ -398,10 +403,14 @@
     }
     applyRoleUI();
     setHeaderDate();
+    // Carrega dados essenciais em paralelo (blocking, rápido)
     await loadAll();
     updateNotifBadge();
     updateMsgBadge();
     navigateTo("dashboard");
+    // Pré-carrega análise periódica em BACKGROUND (não-bloqueante):
+    // quando o usuário clicar na aba, já estará carregada.
+    preloadPeriodicInBackground();
     startPolling();
     connectRealtime();
   }
@@ -497,15 +506,15 @@
       } catch (e) {
         console.error("Falha ao atualizar solicitações via realtime:", e);
       }
-      // Mantém a periódica como "suja" — será recarregada sob demanda quando
-      // o usuário abrir a view de compliance-analysis (lazy).
-      periodicDirty = true;
+      // Atualiza a periódica em background para manter cache fresco para quando o
+      // usuário abrir a aba (não bloqueia a UI).
+      reloadPeriodicFromServer().catch(() => {});
     } else if (view === "trash") {
       try {
         deletedRequests = await apiGet("requests.php?action=deleted");
         renderTrash();
       } catch (_) {}
-      periodicDirty = true;
+      reloadPeriodicFromServer().catch(() => {});
     } else if (view === "compliance-analysis") {
       try {
         // Re-busca TUDO da periódica no servidor (não usa cache obsoleto) e atualiza a tela
@@ -3558,8 +3567,16 @@
   async function renderComplianceAnalysis(opts = {}) {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
-    // Garante dados em memória (preload em loadAll ou fallback de rede, uma única vez)
+
+    // Se ainda não tem dados em memória, mostra spinner (caso ainda esteja pré-carregando)
+    const isAlreadyLoaded = periodicAnalysisAll.length > 0;
+    if (!isAlreadyLoaded) {
+      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
+    }
+
+    // Garante dados em memória (preload em background em showApp ou fallback de rede)
     await ensurePeriodicLoaded();
+
     const hadPreviousData = periodicAnalysisVisible.length > 0 && tbody.querySelectorAll("tr").length > 0 && !tbody.querySelector("#periodicScrollSentinel");
     const previousHTML = hadPreviousData ? tbody.innerHTML : "";
     // Reset paginação (NÃO zera groups — groups são a fonte em memória).
@@ -3572,10 +3589,6 @@
     if (periodicSentinelObserver) {
       periodicSentinelObserver.disconnect();
       periodicSentinelObserver = null;
-    }
-    // Silencioso se já tinha dados (filtro): mantém tabela visível, sem spinner
-    if (!hadPreviousData) {
-      tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     }
     try {
       // Filtros distintos derivados do cache em memória (sem rede)
