@@ -36,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.8";
+  const APP_VERSION = "1.4.9";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1466,7 +1466,7 @@
         dominio: latest.dominio,
         dominio_url: latest.dominio_url,
         status_compliance: "nao_analisado",
-        resumo_analise: "esperanndo re-analise",
+        resumo_analise: "esperando re-analise",
         publish_status: payload.publish_status,
         created_at: createdAt,
       };
@@ -1485,20 +1485,20 @@
       if (matchesFilter) {
         periodicAnalysisVisible.unshift(newRow);
         periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        periodicAnalysisLoaded = Math.min(periodicAnalysisLoaded + 1, periodicAnalysisVisible.length);
-        periodicAnalysisTotal = Math.max(periodicAnalysisTotal, periodicAnalysisVisible.length);
+        // Reset contador e re-renderiza o primeiro chunk — instantâneo
+        periodicAnalysisLoaded = 0;
         const tbody = document.getElementById("periodicAnalysisBody");
         if (tbody) {
-          const currentLoaded = periodicAnalysisLoaded;
           const holder = document.createElement("tbody");
-          const toRender = periodicAnalysisVisible.slice(0, currentLoaded);
+          const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
           holder.innerHTML = toRender.map(periodicRowHtml).join("");
           tbody.innerHTML = "";
           while (holder.firstChild) tbody.appendChild(holder.firstChild);
+          periodicAnalysisLoaded = toRender.length;
           const infoEl = document.getElementById("periodicAnalysisInfo");
-          if (infoEl) infoEl.textContent = `Mostrando ${currentLoaded} de ${periodicAnalysisTotal} análises`;
-          if (currentLoaded < periodicAnalysisTotal) {
-            tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+          if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
+          // Apenas reconfigura observer se necessário
+          if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
             if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
             periodicSentinelObserver = new IntersectionObserver(
               (entries) => {
@@ -1506,79 +1506,29 @@
               },
               { rootMargin: PERIODIC_SENTINEL_MARGIN },
             );
-            periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
-          } else {
-            if (periodicSentinelObserver) {
-              periodicSentinelObserver.disconnect();
-              periodicSentinelObserver = null;
+            let sentinel = document.getElementById("periodicScrollSentinel");
+            if (!sentinel) {
+              tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+              sentinel = document.getElementById("periodicScrollSentinel");
             }
+            if (sentinel) periodicSentinelObserver.observe(sentinel);
+          } else {
+            if (periodicSentinelObserver) { periodicSentinelObserver.disconnect(); periodicSentinelObserver = null; }
             const s = document.getElementById("periodicScrollSentinel");
             if (s) s.remove();
           }
-          requestAnimationFrame(() => {
-            document.querySelectorAll("#periodicAnalysisBody tr").forEach((tr) => {
-              const badge = tr.querySelector("[data-key]");
-              if (badge && badge.getAttribute("data-key") === key) tr.classList.add("is-focused");
-            });
-          });
         }
-      } else {
-        periodicAnalysisTotal = Math.max(periodicAnalysisTotal, periodicAnalysisVisible.length);
-        const infoEl = document.getElementById("periodicAnalysisInfo");
-        if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+        syncPeriodicAllFromGroups();
+        // Foca na linha recém-criada
+        requestAnimationFrame(() => {
+          document.querySelectorAll("#periodicAnalysisBody tr").forEach((tr) => {
+            const badge = tr.querySelector("[data-key]");
+            if (badge && badge.getAttribute("data-key") === key) tr.classList.add("is-focused");
+          });
+        });
       }
-      // Mantém periodicAnalysisAll sincronizado com os groups (fonte da filtragem)
-      syncPeriodicAllFromGroups();
     } catch (e) {
       console.error("Falha ao atualizar análise silenciosamente:", e);
-      // Fallback silencioso sem spinner visível na tabela de solicitações
-      try {
-        const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
-        const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
-        const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
-        const params = new URLSearchParams({ limit: String(PERIODIC_PAGE_SIZE), offset: "0" });
-        if (statusFilter) params.set("status", statusFilter);
-        if (typeFilter) params.set("post_type", typeFilter);
-        if (domainFilter) params.set("dominio", domainFilter);
-        const res2 = await apiGet(`periodic_analysis.php?${params.toString()}`);
-        const rows = Array.isArray(res2) ? res2 : res2.data || [];
-        const total = Array.isArray(res2) ? rows.length : res2.total || 0;
-        periodicAnalysisVisible = rows;
-        periodicAnalysisLoaded = rows.length;
-        periodicAnalysisTotal = total;
-        const groups = new Map();
-        rows.forEach((r) => {
-          const k = `${r.dominio}::${r.id_post ?? ""}`;
-          if (!groups.has(k)) groups.set(k, []);
-          groups.get(k).push(r);
-        });
-        periodicAnalysisGroups = [...groups.entries()].map(([k, entries]) => ({
-          key: k,
-          sorted: [...entries].sort((a, b) => new Date(b.created_at) - new Date(a.created_at)),
-        }));
-        const tbody = document.getElementById("periodicAnalysisBody");
-        if (tbody) {
-          tbody.innerHTML = "";
-          const holder = document.createElement("tbody");
-          holder.innerHTML = rows.map(periodicRowHtml).join("");
-          while (holder.firstChild) tbody.appendChild(holder.firstChild);
-          const infoEl = document.getElementById("periodicAnalysisInfo");
-          if (infoEl) infoEl.textContent = `Mostrando ${rows.length} de ${total} análises`;
-          if (rows.length < total) {
-            tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-            if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-            periodicSentinelObserver = new IntersectionObserver(
-              (entries) => {
-                if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-              },
-              { rootMargin: PERIODIC_SENTINEL_MARGIN },
-            );
-            periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
-          }
-        }
-      } catch (e2) {
-        console.error("Fallback silencioso falhou:", e2);
-      }
     }
   }
 
