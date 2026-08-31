@@ -36,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.9";
+  const APP_VERSION = "1.4.10";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -493,32 +493,24 @@
     if (!view) return;
 
     if (view === "requests") {
-      try {
-        const [reqData, histData, compHistData] = await Promise.all([
-          apiGet("requests.php"),
-          apiGet("requests.php?action=history_all").catch(() => []),
-          apiGet("compliance.php?action=history_all").catch(() => []),
-        ]);
-        requests = reqData;
-        requestHistoryCache = buildHistoryCache(histData);
-        complianceHistoryCache = buildHistoryCache(compHistData);
-        renderRequests();
-      } catch (e) {
-        console.error("Falha ao atualizar solicitações via realtime:", e);
-      }
-      // Atualiza a periódica em background para manter cache fresco para quando o
-      // usuário abrir a aba (não bloqueia a UI).
-      reloadPeriodicFromServer().catch(() => {});
+      // NÃO FAZ NADA: o btnResetCompliance já atualiza a linha diretamente
+      // na memória e re-renderiza só a linha afetada (via updateRequestRow).
+      // O SSE/webhook trará dados frescos depois.
     } else if (view === "trash") {
       try {
         deletedRequests = await apiGet("requests.php?action=deleted");
         renderTrash();
       } catch (_) {}
-      reloadPeriodicFromServer().catch(() => {});
+      // NÃO recarrega a periódica em background pelo mesmo motivo acima.
     } else if (view === "compliance-analysis") {
+      // NÃO recarrega do servidor: a atualização otimista já inseriu a nova linha
+      // na memória. Recarregar agora seria:
+      // 1) Lento (tabela inteira do servidor)
+      // 2) Substituiria dados otimistas por dados desatualizados do servidor
+      //    (pipeline ainda não terminou de processar)
+      // O SSE vai trazer dados frescos quando o pipeline realmente terminar.
       try {
-        // Re-busca TUDO da periódica no servidor (não usa cache obsoleto) e atualiza a tela
-        await reloadPeriodicFromServer();
+        await ensurePeriodicLoaded();
         await renderComplianceAnalysis({ preserveSelection: true });
       } catch (e) {
         console.error("Falha ao atualizar periódica via realtime:", e);
@@ -811,6 +803,83 @@
         )
         .join("");
     requesterSelect.value = currentRequester;
+  }
+
+  function updateRequestRow(id) {
+    const req = requests.find((r) => r.id === id);
+    if (!req) return;
+
+    req.status_compliance = null;
+    req.resumo_analise = null;
+    req.instructions = req.instructions || "";
+
+    const color = req.color || "#7f5af0";
+    const blogName = req.blog_name || "—";
+    const writerName = req.writer_name || "A definir";
+    const requesterName = req.requester_name || "—";
+    const hasResumo = Number(req.has_resumo) ? true : (req.resumo_analise && String(req.resumo_analise).trim() !== "");
+    const complianceValue = req.status_compliance || "";
+    const label = complianceStatusLabel(complianceValue);
+    const canSoftDelete =
+      req.status === "pending" &&
+      (is("admin") || Number(req.requested_by_id) === Number(currentUser.id));
+    const deleteBtn = canSoftDelete
+      ? `<button class="row-action-btn btn-delete-row" data-delete-id="${req.id}" title="Mover para lixeira">🗑</button>`
+      : "";
+    const editBtn = canEdit(req)
+      ? `<button class="row-action-btn" data-edit-id="${req.id}" title="Editar">✏️</button>`
+      : "";
+    const pendencyIconColor =
+      Number(req.unresolved_pendencies_count) > 0
+        ? "color: var(--accent-danger); font-weight: bold; font-size: 1.1em;"
+        : "color: rgba(255,255,255,0.1); filter: grayscale(1);";
+    const pendencyBtn = canManagePendency(req)
+      ? `<button class="row-action-btn" data-pendency-id="${req.id}" title="Pendências" style="${pendencyIconColor}">⚠️</button>`
+      : "";
+    const newHtml = `
+      <tr style="cursor:pointer" data-detail-id="${req.id}">
+        <td><div class="article-title">${escapeHtml(req.keyword)}</div><span class="article-keyword">${req.wordcount} palavras</span></td>
+        <td><div class="blog-name"><span class="blog-dot" style="background:${color}"></span>${escapeHtml(blogName)}</div></td>
+        <td>${escapeHtml(requesterName)}</td>
+        <td>${escapeHtml(writerName)}</td>
+        <td><span class="status-badge ${req.status}">${statusLabel(req.status)}</span></td>
+        <td>${complianceValue ? `<span class="status-badge ${complianceValue}${hasResumo ? " compliance-clickable" : ""}" ${hasResumo ? `data-compliance-id="${req.id}" title="Ver resumo da análise"` : ""}>${label}</span>` : "—"}</td>
+        <td><span class="priority-indicator ${req.priority}"><span class="priority-dot"></span>${priorityLabel(req.priority)}</span></td>
+        <td>${formatDate(req.deadline)}</td>
+        <td style="text-align:center; font-size:1.1em;">${Number(req.has_imagem) ? `<span class="image-view-btn" data-image-id="${req.id}" title="Clique para ver imagem" style="cursor:pointer">🖼️</span>` : '<span style="opacity:0.35" title="Sem imagem">—</span>'}</td>
+        <td>
+          <div class="row-actions">
+            ${pendencyBtn}
+            ${editBtn}
+            ${deleteBtn}
+          </div>
+        </td>
+      </tr>`;
+
+    const tbody = $("#requestsTableBody");
+    const oldRow = tbody?.querySelector(`tr[data-detail-id="${id}"]`);
+    if (oldRow) {
+      oldRow.outerHTML = newHtml;
+      const newRow = tbody?.querySelector(`tr[data-detail-id="${id}"]`);
+      if (newRow) {
+        newRow.addEventListener("click", () => openDetail(Number(newRow.dataset.detailId)));
+        newRow.querySelectorAll("[data-edit-id]").forEach((btn) => {
+          btn.addEventListener("click", (e) => { e.stopPropagation(); openEditRequest(Number(btn.dataset.editId)); });
+        });
+        newRow.querySelectorAll("[data-pendency-id]").forEach((btn) => {
+          btn.addEventListener("click", (e) => { e.stopPropagation(); openPendenciesModal(Number(btn.dataset.pendencyId)); });
+        });
+        newRow.querySelectorAll("[data-delete-id]").forEach((btn) => {
+          btn.addEventListener("click", (e) => { e.stopPropagation(); deleteRequest(Number(btn.dataset.deleteId)); });
+        });
+        newRow.querySelectorAll("[data-compliance-id]").forEach((el) => {
+          el.addEventListener("click", (e) => { e.stopPropagation(); openComplianceModal(Number(el.dataset.complianceId)); });
+        });
+        newRow.querySelectorAll("[data-image-id]").forEach((el) => {
+          el.addEventListener("click", (e) => { e.stopPropagation(); openImageModal(Number(el.dataset.imageId)); });
+        });
+      }
+    }
   }
 
   function renderRequests() {
@@ -2034,8 +2103,12 @@
         try {
           await apiPut("requests.php?action=reset_compliance", { id });
           closeModal("modalCompliance");
-          // Atualiza silenciosamente apenas a view atual (não carrega periodic_analysis aqui)
-          await silentRefreshActiveView();
+          // ATUALIZAÇÃO OTIMISTA: atualiza apenas a linha afetada na tabela
+          // (sem buscar nada do servidor, sem re-renderizar a tabela inteira).
+          // O SSE/webhook trará dados frescos depois.
+          updateRequestRow(id);
+          if (requestHistoryCache[id]) requestHistoryCache[id] = [];
+          if (complianceHistoryCache[id]) complianceHistoryCache[id] = [];
         } catch (err) {
           alert("Erro ao redefinir compliance: " + err.message);
         }
