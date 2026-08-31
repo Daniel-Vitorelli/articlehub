@@ -36,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.10";
+  const APP_VERSION = "1.4.11";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1466,129 +1466,103 @@
   const RESET_BTN_DEFAULT_HTML = "<span>↺</span> Analisar Novamente";
   const RESET_BTN_LOADING_HTML = '<span class="spinner"></span> Criando...';
 
-  async function handlePeriodicReanalyze() {
+  function showToast(msg, type = "error") {
+    let toast = document.getElementById("toastMessage");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "toastMessage";
+      toast.style.cssText = "position:fixed;bottom:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;font-size:14px;max-width:320px;transition:opacity 0.3s;opacity:0;pointer-events:none;";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = msg;
+    toast.style.background = type === "error" ? "var(--accent-danger,#e74c3c)" : "var(--accent-success,#2ecc71)";
+    toast.style.color = "#fff";
+    toast.style.opacity = "1";
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => { toast.style.opacity = "0"; }, 3500);
+  }
+
+  function handlePeriodicReanalyze() {
     const modal = $("#modalCompliance");
     const key = modal?.dataset?.periodicKey;
     if (!key) return;
 
-    // Encontrar o grupo da análise periódica
     const group = periodicAnalysisGroups.find((g) => g.key === key);
     if (!group || !group.sorted.length) return;
 
-    // Pegar a análise mais recente (a que está sendo visualizada)
     const latest = group.sorted[0];
 
-    // Preparar dados para o insert
     const payload = {
       action: "reanalyze",
       id_post: latest.id_post,
       post_type: latest.post_type,
       dominio: latest.dominio,
-      publish_status: latest.publish_status || "draft", // fallback se não tiver
+      publish_status: latest.publish_status || "draft",
     };
 
-    // Mostrar loading no botão (com guarda de existência)
-    const btn = $("#btnResetCompliance");
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = RESET_BTN_LOADING_HTML;
-    }
+    closeModal("modalCompliance");
 
-    let res = null;
-    try {
-      res = await apiPost("periodic_analysis.php", payload);
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const tempId = -Date.now();
+    const newRow = {
+      id: tempId,
+      id_post: latest.id_post,
+      post_type: latest.post_type,
+      dominio: latest.dominio,
+      dominio_url: latest.dominio_url,
+      status_compliance: "nao_analisado",
+      resumo_analise: "esperando re-analise",
+      publish_status: payload.publish_status,
+      created_at: createdAt,
+    };
 
-      if (!res || !res.success) {
-        throw new Error(res?.message || "Resposta inesperada do servidor.");
-      }
+    const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
+    const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
+    const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
+    const matchesFilter =
+      (!statusFilter || newRow.status_compliance === statusFilter) &&
+      (!typeFilter || newRow.post_type === typeFilter) &&
+      (!domainFilter || newRow.dominio === domainFilter);
 
-      console.log("Nova análise periódica criada:", res.id);
+    const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
+    if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
 
-      // Só fecha o modal se ainda estiver mostrando ESTE item
-      if (modal.dataset.periodicKey === key) {
-        closeModal("modalCompliance");
-      }
-    } catch (err) {
-      alert(
-        "Erro ao criar nova análise: " +
-          (err?.message || "erro desconhecido"),
-      );
-    } finally {
-      // Sempre restaura com HTML FIXO — nunca depende do estado anterior
-      if (btn) {
-        btn.disabled = false;
-        btn.innerHTML = RESET_BTN_DEFAULT_HTML;
-      }
-    }
-
-    // Atualização silenciosa: não mostra spinner na tabela de solicitações nem na periódica
-    // Apenas insere a nova linha no topo sem recarregar tudo com loading visível
-    if (!res || !res.id) return;
-    try {
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, "0");
-      const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-      const newRow = {
-        id: res.id,
-        id_post: latest.id_post,
-        post_type: latest.post_type,
-        dominio: latest.dominio,
-        dominio_url: latest.dominio_url,
-        status_compliance: "nao_analisado",
-        resumo_analise: "esperando re-analise",
-        publish_status: payload.publish_status,
-        created_at: createdAt,
-      };
-      // Atualiza grupo
-      group.sorted.unshift(newRow);
-      // Verifica filtros atuais da view periódica
-      const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
-      const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
-      const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
-      const matchesFilter =
-        (!statusFilter || newRow.status_compliance === statusFilter) &&
-        (!typeFilter || newRow.post_type === typeFilter) &&
-        (!domainFilter || newRow.dominio === domainFilter);
-      const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
-      if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
-      if (matchesFilter) {
-        periodicAnalysisVisible.unshift(newRow);
-        periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        // Reset contador e re-renderiza o primeiro chunk — instantâneo
-        periodicAnalysisLoaded = 0;
-        const tbody = document.getElementById("periodicAnalysisBody");
-        if (tbody) {
-          const holder = document.createElement("tbody");
-          const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
-          holder.innerHTML = toRender.map(periodicRowHtml).join("");
-          tbody.innerHTML = "";
-          while (holder.firstChild) tbody.appendChild(holder.firstChild);
-          periodicAnalysisLoaded = toRender.length;
-          const infoEl = document.getElementById("periodicAnalysisInfo");
-          if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-          // Apenas reconfigura observer se necessário
-          if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-            if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-            periodicSentinelObserver = new IntersectionObserver(
-              (entries) => {
-                if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-              },
-              { rootMargin: PERIODIC_SENTINEL_MARGIN },
-            );
-            let sentinel = document.getElementById("periodicScrollSentinel");
-            if (!sentinel) {
-              tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-              sentinel = document.getElementById("periodicScrollSentinel");
-            }
-            if (sentinel) periodicSentinelObserver.observe(sentinel);
-          } else {
-            if (periodicSentinelObserver) { periodicSentinelObserver.disconnect(); periodicSentinelObserver = null; }
-            const s = document.getElementById("periodicScrollSentinel");
-            if (s) s.remove();
+    if (matchesFilter) {
+      periodicAnalysisVisible.unshift(newRow);
+      periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      periodicAnalysisLoaded = 0;
+      const tbody = document.getElementById("periodicAnalysisBody");
+      if (tbody) {
+        const holder = document.createElement("tbody");
+        const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
+        holder.innerHTML = toRender.map(periodicRowHtml).join("");
+        tbody.innerHTML = "";
+        while (holder.firstChild) tbody.appendChild(holder.firstChild);
+        periodicAnalysisLoaded = toRender.length;
+        const infoEl = document.getElementById("periodicAnalysisInfo");
+        if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
+        if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
+          if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+          periodicSentinelObserver = new IntersectionObserver(
+            (entries) => {
+              if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+            },
+            { rootMargin: PERIODIC_SENTINEL_MARGIN },
+          );
+          let sentinel = document.getElementById("periodicScrollSentinel");
+          if (!sentinel) {
+            tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+            sentinel = document.getElementById("periodicScrollSentinel");
           }
+          if (sentinel) periodicSentinelObserver.observe(sentinel);
+        } else {
+          if (periodicSentinelObserver) { periodicSentinelObserver.disconnect(); periodicSentinelObserver = null; }
+          const s = document.getElementById("periodicScrollSentinel");
+          if (s) s.remove();
         }
         syncPeriodicAllFromGroups();
-        // Foca na linha recém-criada
         requestAnimationFrame(() => {
           document.querySelectorAll("#periodicAnalysisBody tr").forEach((tr) => {
             const badge = tr.querySelector("[data-key]");
@@ -1596,182 +1570,148 @@
           });
         });
       }
-    } catch (e) {
-      console.error("Falha ao atualizar análise silenciosamente:", e);
     }
+
+    apiPost("periodic_analysis.php", payload)
+      .then((res) => {
+        if (!res || !res.success) throw new Error(res?.message || "Resposta inesperada do servidor.");
+        const realRow = periodicAnalysisVisible.find((r) => r.id === tempId);
+        if (realRow) { realRow.id = res.id; realRow._realId = res.id; }
+      })
+      .catch((err) => {
+        showToast("Erro ao criar análise: " + (err?.message || "erro desconhecido"), "error");
+      });
   }
 
-  function updateBulkUI() {
-    const count = selectedPeriodicKeys.size;
-    const bulkBtn = $("#btnBulkReanalyze");
-    const bulkCount = $("#bulkCount");
-    const selectAll = $("#periodicSelectAll");
-    if (bulkCount) bulkCount.textContent = count;
-    if (bulkBtn) {
-      if (count === 0) {
-        bulkBtn.style.display = "none";
-        bulkBtn.disabled = true;
-      } else {
-        bulkBtn.style.display = "inline-flex";
-        bulkBtn.disabled = false;
-        bulkBtn.style.opacity = "1";
-        bulkBtn.style.pointerEvents = "auto";
-      }
-    }
-    if (selectAll) {
-      const visibleKeys = periodicAnalysisVisible.map((r) => `${r.dominio}::${r.id_post}`);
-      const allVisibleSelected = visibleKeys.length > 0 && visibleKeys.every((k) => selectedPeriodicKeys.has(k));
-      selectAll.checked = allVisibleSelected;
-      selectAll.indeterminate = !allVisibleSelected && visibleKeys.some((k) => selectedPeriodicKeys.has(k));
-    }
-  }
-
-  async function handleBulkReanalyze() {
+  function handleBulkReanalyze() {
     if (selectedPeriodicKeys.size === 0) return;
     const keys = Array.from(selectedPeriodicKeys);
     if (!confirm(`Analisar novamente ${keys.length} ${keys.length === 1 ? "item" : "itens"} selecionados?`)) return;
+
     const btn = $("#btnBulkReanalyze");
-    const originalHTML = btn ? btn.innerHTML : "";
     if (btn) {
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span> Criando...';
       btn.style.opacity = "0.5";
       btn.style.pointerEvents = "none";
     }
-    let successCount = 0;
-    let failCount = 0;
-    let successResults = []; // [{ key, latest, res }]
-    const concurrency = 3;
-    for (let i = 0; i < keys.length; i += concurrency) {
-      const chunk = keys.slice(i, i + concurrency);
-      const results = await Promise.allSettled(
-        chunk.map(async (key) => {
-          const [dominio, idPost] = key.split("::");
-          let group = periodicAnalysisGroups.find((g) => g.key === key);
-          let latest = group ? group.sorted[0] : periodicAnalysisVisible.find((r) => `${r.dominio}::${r.id_post}` === key);
-          if (!latest) {
-            try {
-              const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
-              if (rows && rows.length) latest = rows[0];
-            } catch (e) {}
-          }
-          if (!latest) throw new Error(`Dados não encontrados para ${key}`);
-          const payload = {
-            action: "reanalyze",
-            id_post: latest.id_post,
-            post_type: latest.post_type,
-            dominio: latest.dominio,
-            publish_status: latest.publish_status || "draft",
-          };
-          const res = await apiPost("periodic_analysis.php", payload);
-          if (!res || !res.success) throw new Error(res?.message || "Falha");
-          return { key, latest, res };
-        }),
-      );
-      results.forEach((r) => {
-        if (r.status === "fulfilled") {
-          successCount++;
-          successResults.push(r.value);
-        } else {
-          failCount++;
-          console.error("Falha ao reanalisar", r.reason);
+
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
+    const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
+    const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
+    const tempIds = new Map();
+
+    keys.forEach((key) => {
+      const [dominio, idPost] = key.split("::");
+      const group = periodicAnalysisGroups.find((g) => g.key === key);
+      const latest = group ? group.sorted[0] : periodicAnalysisVisible.find((r) => `${r.dominio}::${r.id_post}` === key);
+      if (!latest) return;
+      const tempId = -Date.now() - Math.floor(Math.random() * 1000);
+      tempIds.set(tempId, key);
+      const newRow = {
+        id: tempId,
+        id_post: latest.id_post,
+        post_type: latest.post_type,
+        dominio: latest.dominio,
+        dominio_url: latest.dominio_url,
+        status_compliance: "nao_analisado",
+        resumo_analise: "esperando re-analise",
+        publish_status: latest.publish_status || "draft",
+        created_at: createdAt,
+      };
+      const g = periodicAnalysisGroups.find((x) => x.key === key);
+      if (g) g.sorted.unshift(newRow);
+      else periodicAnalysisGroups.push({ key, sorted: [newRow] });
+      const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
+      if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
+      const matchesFilter =
+        (!statusFilter || newRow.status_compliance === statusFilter) &&
+        (!typeFilter || newRow.post_type === typeFilter) &&
+        (!domainFilter || newRow.dominio === domainFilter);
+      if (matchesFilter) periodicAnalysisVisible.unshift(newRow);
+    });
+
+    periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    syncPeriodicAllFromGroups();
+    periodicAnalysisLoaded = 0;
+    const tb = document.getElementById("periodicAnalysisBody");
+    if (tb) {
+      const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
+      const holder = document.createElement("tbody");
+      holder.innerHTML = toRender.map(periodicRowHtml).join("");
+      tb.innerHTML = "";
+      while (holder.firstChild) tb.appendChild(holder.firstChild);
+      periodicAnalysisLoaded = toRender.length;
+      const infoEl = document.getElementById("periodicAnalysisInfo");
+      if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
+      if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
+        if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+        periodicSentinelObserver = new IntersectionObserver(
+          (entries) => { if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk(); },
+          { rootMargin: PERIODIC_SENTINEL_MARGIN },
+        );
+        let sentinel = document.getElementById("periodicScrollSentinel");
+        if (!sentinel) {
+          tb.insertAdjacentHTML("beforeend", periodicSentinelRow());
+          sentinel = document.getElementById("periodicScrollSentinel");
         }
-      });
+        if (sentinel) periodicSentinelObserver.observe(sentinel);
+      }
     }
+
     selectedPeriodicKeys.clear();
     updateBulkUI();
     const selAll = $("#periodicSelectAll");
-    if (selAll) {
-      selAll.checked = false;
-      selAll.indeterminate = false;
-    }
+    if (selAll) { selAll.checked = false; selAll.indeterminate = false; }
     document.querySelectorAll(".periodic-checkbox").forEach((cb) => (cb.checked = false));
     if (btn) {
       btn.disabled = false;
-      btn.innerHTML = originalHTML;
+      btn.innerHTML = '<span>↺</span> Reanalisar Selecionados';
       btn.style.opacity = "0.5";
       btn.style.pointerEvents = "none";
     }
-    if (successCount > 0) {
-      // ATUALIZAÇÃO OTIMISTA: insere as novas linhas na memória sem buscar tudo do servidor.
-      try {
-        const now = new Date();
-        const pad = (n) => String(n).padStart(2, "0");
-        const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 
-        successResults.forEach(({ key, latest, res }) => {
-          const newRow = {
-            id: res.id,
-            id_post: latest.id_post,
-            post_type: latest.post_type,
-            dominio: latest.dominio,
-            dominio_url: latest.dominio_url,
-            status_compliance: "nao_analisado",
-            resumo_analise: "esperando re-analise",
-            publish_status: latest.publish_status || "draft",
-            created_at: createdAt,
-          };
+    const payloads = keys.map((key) => {
+      const [dominio, idPost] = key.split("::");
+      const group = periodicAnalysisGroups.find((g) => g.key === key);
+      const latest = group ? group.sorted[0] : null;
+      if (!latest) return null;
+      return { key, payload: {
+        action: "reanalyze",
+        id_post: latest.id_post,
+        post_type: latest.post_type,
+        dominio: latest.dominio,
+        publish_status: latest.publish_status || "draft",
+      }};
+    }).filter(Boolean);
 
-          // Atualiza/insere o grupo
-          let group = periodicAnalysisGroups.find((g) => g.key === key);
-          if (group) {
-            group.sorted.unshift(newRow);
-          } else {
-            group = { key, sorted: [newRow] };
-            periodicAnalysisGroups.push(group);
+    let failCount = 0;
+    const concurrency = 3;
+    (async () => {
+      for (let i = 0; i < payloads.length; i += concurrency) {
+        const chunk = payloads.slice(i, i + concurrency);
+        await Promise.allSettled(chunk.map(async ({ key, payload }) => {
+          try {
+            const res = await apiPost("periodic_analysis.php", payload);
+            if (!res || !res.success) throw new Error(res?.message || "Falha");
+            const realRow = periodicAnalysisVisible.find((r) => {
+              for (const [tempId, k] of tempIds) {
+                if (k === key && r.id === tempId) return true;
+              }
+              return false;
+            });
+            if (realRow) realRow.id = res.id;
+          } catch (e) {
+            failCount++;
+            console.error("Falha ao reanalisar (background)", e);
           }
-
-          // Atualiza periodicAnalysisVisible (lista filtrada em memória)
-          const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
-          if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
-
-          // Aplica filtro atual
-          const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
-          const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
-          const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
-          const matchesFilter =
-            (!statusFilter || newRow.status_compliance === statusFilter) &&
-            (!typeFilter || newRow.post_type === typeFilter) &&
-            (!domainFilter || newRow.dominio === domainFilter);
-          if (matchesFilter) {
-            periodicAnalysisVisible.unshift(newRow);
-          }
-        });
-
-        // Reordena e mantém periodicAnalysisAll sincronizado
-        periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        syncPeriodicAllFromGroups();
-
-        // Re-renderiza o primeiro chunk instantaneamente
-        const tb = document.getElementById("periodicAnalysisBody");
-        if (tb) {
-          const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
-          const holder = document.createElement("tbody");
-          holder.innerHTML = toRender.map(periodicRowHtml).join("");
-          tb.innerHTML = "";
-          while (holder.firstChild) tb.appendChild(holder.firstChild);
-          periodicAnalysisLoaded = toRender.length;
-          const infoEl = document.getElementById("periodicAnalysisInfo");
-          if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-          if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-            tb.insertAdjacentHTML("beforeend", periodicSentinelRow());
-            if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-            periodicSentinelObserver = new IntersectionObserver(
-              (entries) => {
-                if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-              },
-              { rootMargin: PERIODIC_SENTINEL_MARGIN },
-            );
-            periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
-          }
-        }
-      } catch (e) {
-        console.error("Falha ao aplicar atualização otimista após bulk:", e);
+        }));
       }
-    }
-    if (failCount) {
-      alert(`Falha ao reanalisar: ${failCount} erro(s).`);
-    }
+      if (failCount) showToast(`Falha ao reanalisar: ${failCount} erro(s).`, "error");
+    })();
   }
 
   function openComplianceHistoryDetail(row) {
@@ -1873,13 +1813,14 @@
     });
   }
 
-  async function restoreRequest(id) {
-    try {
-      await apiPut("requests.php?action=restore", { id });
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro ao recuperar solicitação: " + err.message);
-    }
+  function restoreRequest(id) {
+    const r = deletedRequests.find((req) => req.id == id);
+    if (!r) return;
+    deletedRequests = deletedRequests.filter((req) => req.id != id);
+    requests.push(r);
+    renderTrash();
+    renderRequests();
+    apiPut("requests.php?action=restore", { id }).catch((err) => showToast("Erro ao recuperar solicitação: " + err.message, "error"));
   }
 
   // ============================================
@@ -1942,21 +1883,15 @@
       .join("");
   }
 
-  window.togglePendencyStatus = async function (id, newStatus) {
-    try {
-      await apiPost("pendencies.php", {
-        action: "update_status",
-        id,
-        status: newStatus,
-      });
-      const reqId = $("#pendencyReqId").value;
-      await loadPendencies(reqId);
-
-      // Atualiza silenciosamente a view atual (sem carregar periodic_analysis)
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro ao atualizar pendência: " + err.message);
-    }
+  window.togglePendencyStatus = function (id, newStatus) {
+    const p = currentPendencies.find((p) => p.id == id);
+    if (p) p.status = newStatus;
+    renderPendenciesList();
+    apiPost("pendencies.php", {
+      action: "update_status",
+      id,
+      status: newStatus,
+    }).catch((err) => showToast("Erro ao atualizar pendência: " + err.message, "error"));
   };
 
   // Ensure modal can be closed directly if bindEvents missed it
@@ -1966,7 +1901,7 @@
     },
   );
 
-  $("#btnSubmitPendency").addEventListener("click", async (e) => {
+  $("#btnSubmitPendency").addEventListener("click", (e) => {
     e.preventDefault();
     const reqId = $("#pendencyReqId").value;
     const desc = $("#pendencyDescription").value.trim();
@@ -1979,19 +1914,16 @@
     btn.disabled = true;
     btn.textContent = "Adicionando...";
 
-    try {
-      await apiPost("pendencies.php", { request_id: reqId, description: desc });
-      $("#pendencyDescription").value = "";
-      await loadPendencies(reqId);
+    currentPendencies.push({ id: Date.now(), request_id: reqId, description: desc, status: "open" });
+    renderPendenciesList();
+    $("#pendencyDescription").value = "";
 
-      // Atualiza silenciosamente a view atual (sem carregar periodic_analysis)
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro: " + err.message);
-    } finally {
-      btn.disabled = false;
-      btn.textContent = "Adicionar Pendência";
-    }
+    apiPost("pendencies.php", { request_id: reqId, description: desc })
+      .catch((err) => showToast("Erro: " + err.message, "error"))
+      .finally(() => {
+        btn.disabled = false;
+        btn.textContent = "Adicionar Pendência";
+      });
   });
 
   $("#btnToggleComplianceHistory").addEventListener(
@@ -2082,36 +2014,26 @@
     });
   }
 
-  $("#btnResetCompliance").addEventListener("click", async () => {
+  $("#btnResetCompliance").addEventListener("click", () => {
     const modal = document.getElementById("modalCompliance");
 
-    // Roteia para a lógica da análise periódica quando aplicável
     if (modal.dataset.periodicKey) {
-      try {
-        await handlePeriodicReanalyze();
-      } catch (e) {
-        // handlePeriodicReanalyze já trata os próprios erros internamente;
-        // este catch é uma rede de segurança extra
-        console.error("Erro inesperado na reanálise periódica:", e);
-      }
+      handlePeriodicReanalyze();
       return;
     }
 
     // Lógica original para requests
     const id = Number(modal.dataset.requestId);
     if (!id) return;
-        try {
-          await apiPut("requests.php?action=reset_compliance", { id });
-          closeModal("modalCompliance");
-          // ATUALIZAÇÃO OTIMISTA: atualiza apenas a linha afetada na tabela
-          // (sem buscar nada do servidor, sem re-renderizar a tabela inteira).
-          // O SSE/webhook trará dados frescos depois.
-          updateRequestRow(id);
-          if (requestHistoryCache[id]) requestHistoryCache[id] = [];
-          if (complianceHistoryCache[id]) complianceHistoryCache[id] = [];
-        } catch (err) {
+        // INSTANTÂNEO: fecha modal e atualiza a UI IMEDIATAMENTE (antes do fetch).
+        // O request vai em fire-and-forget.
+        closeModal("modalCompliance");
+        updateRequestRow(id);
+        if (requestHistoryCache[id]) requestHistoryCache[id] = [];
+        if (complianceHistoryCache[id]) complianceHistoryCache[id] = [];
+        apiPut("requests.php?action=reset_compliance", { id }).catch((err) => {
           alert("Erro ao redefinir compliance: " + err.message);
-        }
+        });
   });
 
   // ============================================
@@ -2314,7 +2236,7 @@
 
   let _submitting = false;
 
-  async function submitRequest() {
+  function submitRequest() {
     if (_submitting) return;
     const form = $("#formNewRequest");
     if (!form.checkValidity()) {
@@ -2325,29 +2247,56 @@
     _submitting = true;
     $("#btnSubmitRequest").disabled = true;
     const fd = new FormData(form);
-    try {
-      await apiPost("requests.php", {
-        keyword: fd.get("keyword"),
-        domainId: Number(fd.get("blog")),
-        writerId: fd.get("writer") ? Number(fd.get("writer")) : null,
-        priority: fd.get("priority"),
-        wordcount: fd.get("wordcount"),
-        deadline: fd.get("deadline"),
-        language: fd.get("language"),
-        niche_id: fd.get("niche_id") ? Number(fd.get("niche_id")) : null,
-        purpose: fd.get("purpose"),
-        content_type: fd.get("content_type"),
-        instructions: fd.get("instructions") || "",
-      });
+    const tempId = -Date.now();
+    const newReq = {
+      id: tempId,
+      keyword: fd.get("keyword"),
+      domain_id: Number(fd.get("blog")),
+      writer_id: fd.get("writer") ? Number(fd.get("writer")) : null,
+      priority: fd.get("priority"),
+      wordcount: fd.get("wordcount"),
+      deadline: fd.get("deadline"),
+      language: fd.get("language"),
+      niche_id: fd.get("niche_id") ? Number(fd.get("niche_id")) : null,
+      purpose: fd.get("purpose"),
+      content_type: fd.get("content_type"),
+      instructions: fd.get("instructions") || "",
+      status: "pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
 
-      closeModal("modalNew");
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro ao criar: " + err.message);
-    } finally {
+    closeModal("modalNew");
+    requests.unshift(newReq);
+    renderRequests();
+
+    apiPost("requests.php", {
+      keyword: fd.get("keyword"),
+      domainId: Number(fd.get("blog")),
+      writerId: fd.get("writer") ? Number(fd.get("writer")) : null,
+      priority: fd.get("priority"),
+      wordcount: fd.get("wordcount"),
+      deadline: fd.get("deadline"),
+      language: fd.get("language"),
+      niche_id: fd.get("niche_id") ? Number(fd.get("niche_id")) : null,
+      purpose: fd.get("purpose"),
+      content_type: fd.get("content_type"),
+      instructions: fd.get("instructions") || "",
+    }).then((res) => {
+      if (res && res.id) {
+        const idx = requests.findIndex((r) => r.id === tempId);
+        if (idx !== -1) requests[idx] = { ...requests[idx], id: res.id };
+        renderRequests();
+      }
+    }).catch((err) => {
+      showToast("Erro ao criar: " + err.message, "error");
+      const idx = requests.findIndex((r) => r.id === tempId);
+      if (idx !== -1) requests.splice(idx, 1);
+      renderRequests();
+    }).finally(() => {
       _submitting = false;
       $("#btnSubmitRequest").disabled = false;
-    }
+    });
   }
 
   // ---- Edit Request (Gestor / Admin) ----
@@ -2403,7 +2352,7 @@
     openModal("modalEdit");
   }
 
-  async function submitEditRequest() {
+  function submitEditRequest() {
     if (_submitting) return;
     const form = $("#formEditRequest");
     if (!form.checkValidity()) {
@@ -2415,13 +2364,14 @@
     $("#btnSubmitEdit").disabled = true;
     const editId = Number($("#editRequestId").value);
     const fd = new FormData(form);
+    const original = requests.find((r) => r.id === editId);
+    const originalSnapshot = original ? { ...original } : null;
 
-    try {
-      await apiPut("requests.php", {
-        id: editId,
+    if (original) {
+      Object.assign(original, {
         keyword: fd.get("keyword"),
-        domainId: Number(fd.get("blog")),
-        writerId: fd.get("writer") ? Number(fd.get("writer")) : null,
+        domain_id: Number(fd.get("blog")),
+        writer_id: fd.get("writer") ? Number(fd.get("writer")) : null,
         priority: fd.get("priority"),
         wordcount: fd.get("wordcount"),
         deadline: fd.get("deadline"),
@@ -2430,16 +2380,36 @@
         purpose: fd.get("purpose"),
         content_type: fd.get("content_type"),
         instructions: fd.get("instructions") || "",
+        updated_at: new Date().toISOString(),
       });
+    }
 
-      closeModal("modalEdit");
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro ao editar: " + err.message);
-    } finally {
+    closeModal("modalEdit");
+    renderRequests();
+
+    apiPut("requests.php", {
+      id: editId,
+      keyword: fd.get("keyword"),
+      domainId: Number(fd.get("blog")),
+      writerId: fd.get("writer") ? Number(fd.get("writer")) : null,
+      priority: fd.get("priority"),
+      wordcount: fd.get("wordcount"),
+      deadline: fd.get("deadline"),
+      language: fd.get("language"),
+      niche_id: fd.get("niche_id") ? Number(fd.get("niche_id")) : null,
+      purpose: fd.get("purpose"),
+      content_type: fd.get("content_type"),
+      instructions: fd.get("instructions") || "",
+    }).catch((err) => {
+      showToast("Erro ao editar: " + err.message, "error");
+      if (original && originalSnapshot) {
+        Object.assign(original, originalSnapshot);
+        renderRequests();
+      }
+    }).finally(() => {
       _submitting = false;
       $("#btnSubmitEdit").disabled = false;
-    }
+    });
   }
 
   // ---- Detail (dados already em memória: resumo/instructions/histórico pré-carregados) ----
@@ -2694,7 +2664,7 @@
     }
   }
 
-  async function deleteRequest(id) {
+  function deleteRequest(id) {
     const r = requests.find((req) => req.id == id);
     if (!r) return;
     const canSoftDelete =
@@ -2704,22 +2674,18 @@
       (r.status === "pending" && r.requested_by_id == currentUser.id);
     if (!canSoftDelete) return;
     if (!confirm("Mover esta solicitação para a lixeira?")) return;
-    try {
-      await apiDelete(`requests.php?id=${id}&force=0`);
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro: " + err.message);
-    }
+    requests = requests.filter((req) => req.id != id);
+    deletedRequests.push(r);
+    updateTrashBadge();
+    renderRequests();
+    apiDelete(`requests.php?id=${id}&force=0`).catch((err) => showToast("Erro: " + err.message, "error"));
   }
 
-  async function hardDeleteRequest(id) {
+  function hardDeleteRequest(id) {
     if (!canDelete()) return; // Only true admins can hard delete
-    try {
-      await apiDelete(`requests.php?id=${id}&force=1`);
-      await silentRefreshActiveView();
-    } catch (err) {
-      alert("Erro: " + err.message);
-    }
+    deletedRequests = deletedRequests.filter((req) => req.id != id);
+    renderTrash();
+    apiDelete(`requests.php?id=${id}&force=1`).catch((err) => showToast("Erro: " + err.message, "error"));
   }
 
   // ============================================
@@ -2853,7 +2819,7 @@
     }
   }
 
-  async function submitPublish() {
+  function submitPublish() {
     const reqId = Number($("#publishRequestId").value);
     const urlInput = $("#publishUrl");
     const url = urlInput.value.trim();
@@ -2883,31 +2849,34 @@
     submitBtn.disabled = true;
     urlInput.className = "publish-url-input";
 
-    try {
-      await apiPut("requests.php?action=publish", { id: reqId, url });
-
-      statusEl.className = "publish-status show success";
-      spinner.style.display = "none";
-      statusText.textContent = "✅ Artigo publicado com sucesso!";
-      urlInput.className = "publish-url-input valid";
-
-      // Atualiza a view atual em silêncio (sem esperar timeout)
-      await silentRefreshActiveView();
-
-      setTimeout(() => {
-        closeModal("modalPublish");
-        submitBtn.disabled = false;
-        submitBtn.innerHTML = '<span>?</span> Publicar';
-        submitBtn.classList.remove("show");
-        urlInput.value = "";
-        urlInput.className = "publish-url-input";
-        statusEl.className = "";
-        statusText.textContent = "";
-      }, 1500);
-    } catch (err) {
-      showPublishError(err.message);
-      submitBtn.disabled = false;
+    const r = requests.find((req) => req.id == reqId);
+    if (r) {
+      r.published_url = url;
+      r.published_at = new Date().toISOString();
+      renderRequests();
     }
+    apiPut("requests.php?action=publish", { id: reqId, url })
+      .then(() => {
+        statusEl.className = "publish-status show success";
+        spinner.style.display = "none";
+        statusText.textContent = "✅ Artigo publicado com sucesso!";
+        urlInput.className = "publish-url-input valid";
+
+        setTimeout(() => {
+          closeModal("modalPublish");
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = '<span>?</span> Publicar';
+          submitBtn.classList.remove("show");
+          urlInput.value = "";
+          urlInput.className = "publish-url-input";
+          statusEl.className = "";
+          statusText.textContent = "";
+        }, 1500);
+      })
+      .catch((err) => {
+        showPublishError(err.message);
+        submitBtn.disabled = false;
+      });
   }
 
   function showPublishError(msg) {
