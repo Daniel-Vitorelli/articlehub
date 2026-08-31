@@ -36,7 +36,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.4";
+  const APP_VERSION = "1.4.5";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1889,9 +1889,8 @@
       const reqId = $("#pendencyReqId").value;
       await loadPendencies(reqId);
 
-      // Reload lists in background to update the icon color on dashboard
-      await loadAll();
-      refreshCurrentView();
+      // Atualiza silenciosamente a view atual (sem carregar periodic_analysis)
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro ao atualizar pendência: " + err.message);
     }
@@ -1922,8 +1921,8 @@
       $("#pendencyDescription").value = "";
       await loadPendencies(reqId);
 
-      await loadAll();
-      refreshCurrentView();
+      // Atualiza silenciosamente a view atual (sem carregar periodic_analysis)
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro: " + err.message);
     } finally {
@@ -2038,14 +2037,14 @@
     // Lógica original para requests
     const id = Number(modal.dataset.requestId);
     if (!id) return;
-    try {
-      await apiPut("requests.php?action=reset_compliance", { id });
-      closeModal("modalCompliance");
-      await loadAll();
-      refreshCurrentView();
-    } catch (err) {
-      alert("Erro ao redefinir compliance: " + err.message);
-    }
+        try {
+          await apiPut("requests.php?action=reset_compliance", { id });
+          closeModal("modalCompliance");
+          // Atualiza silenciosamente apenas a view atual (não carrega periodic_analysis aqui)
+          await silentRefreshActiveView();
+        } catch (err) {
+          alert("Erro ao redefinir compliance: " + err.message);
+        }
   });
 
   // ============================================
@@ -2275,8 +2274,7 @@
       });
 
       closeModal("modalNew");
-      await loadAll();
-      refreshCurrentView();
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro ao criar: " + err.message);
     } finally {
@@ -2368,8 +2366,7 @@
       });
 
       closeModal("modalEdit");
-      await loadAll();
-      refreshCurrentView();
+      await silentRefreshActiveView();
     } catch (err) {
       alert("Erro ao editar: " + err.message);
     } finally {
