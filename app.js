@@ -33,6 +33,7 @@
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
   let periodicSentinelObserver = null;
   const PERIODIC_PAGE_SIZE = 50;
+  const PERIODIC_BACKEND_PAGE = 200; // quantos grupos buscar por request no preload
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
@@ -277,7 +278,7 @@
   async function loadAllPeriodicPaginated() {
     const allRows = [];
     let offset = 0;
-    const pageSize = 100;
+    const pageSize = PERIODIC_BACKEND_PAGE;
     while (true) {
       const raw = await apiGet(`periodic_analysis.php?limit=${pageSize}&offset=${offset}`);
       const rows = Array.isArray(raw) ? raw : (raw?.data || []);
@@ -1597,6 +1598,14 @@
       });
   }
 
+  function updateBulkUI() {
+    const count = selectedPeriodicKeys.size;
+    const bulkBtn = $("#btnBulkReanalyze");
+    const bulkCount = $("#bulkCount");
+    if (bulkCount) bulkCount.textContent = count;
+    if (bulkBtn) bulkBtn.style.display = count > 0 ? "" : "none";
+  }
+
   function handleBulkReanalyze() {
     if (selectedPeriodicKeys.size === 0) return;
     const keys = Array.from(selectedPeriodicKeys);
@@ -1684,8 +1693,8 @@
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = '<span>↺</span> Reanalisar Selecionados';
-      btn.style.opacity = "0.5";
-      btn.style.pointerEvents = "none";
+      btn.style.opacity = "1";
+      btn.style.pointerEvents = "";
     }
 
     const payloads = keys.map((key) => {
