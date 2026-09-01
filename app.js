@@ -41,7 +41,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.22";
+  const APP_VERSION = "1.4.23";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1482,7 +1482,7 @@
     }
   }
 
-  async function openComplianceModalForPeriodic(key) {
+  function openComplianceModalForPeriodic(key) {
     const [dominio, idPost] = key.split("::");
     const group = periodicAnalysisGroups.find((g) => g.key === key);
     const latest = group ? group.sorted[0] : null;
@@ -1494,7 +1494,7 @@
     if (resumoEl) {
       const txt = latest?.resumo_analise && String(latest.resumo_analise).trim() !== ""
         ? latest.resumo_analise
-        : "Carregando histórico...";
+        : "Carregando...";
       resumoEl.innerHTML = renderComplianceResumo(txt);
     }
     const btn = $("#btnResetCompliance");
@@ -1512,33 +1512,34 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    try {
-      const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
-      if (!rows?.length) return;
-      if (modal.dataset.periodicKey !== key) return;
+    apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
+      .then((rows) => {
+        if (!rows?.length) return;
+        if (modal.dataset.periodicKey !== key) return;
 
-      rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      const latestRow = rows[0];
-      const historyRows = rows.slice(1).map((h) => ({
-        created_at: h.created_at,
-        status_compliance: h.status_compliance,
-        resumo_analise: h.resumo_analise,
-      }));
+        rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        const latestRow = rows[0];
+        const historyRows = rows.slice(1).map((h) => ({
+          created_at: h.created_at,
+          status_compliance: h.status_compliance,
+          resumo_analise: h.resumo_analise,
+        }));
 
-      if (resumoEl) resumoEl.innerHTML = renderComplianceResumo(latestRow.resumo_analise || "—");
-      if (btn) btn.style.display = (!!latestRow.status_compliance || (latestRow.resumo_analise?.trim())) ? "" : "none";
-      complianceHistoryProvider = { periodicKey: key, rows: historyRows };
+        if (resumoEl) resumoEl.innerHTML = renderComplianceResumo(latestRow.resumo_analise || "—");
+        if (btn) btn.style.display = (!!latestRow.status_compliance || (latestRow.resumo_analise?.trim())) ? "" : "none";
+        complianceHistoryProvider = { periodicKey: key, rows: historyRows };
 
-      if (!periodicAnalysisGroups.find((g) => g.key === key)) {
-        periodicAnalysisGroups.push({ key, sorted: rows });
-      } else {
-        const g = periodicAnalysisGroups.find((g) => g.key === key);
-        rows.forEach((r) => { if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r); });
-        g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      }
-    } catch (e) {
-      console.error("Falha ao carregar histórico periódico:", e);
-    }
+        if (!periodicAnalysisGroups.find((g) => g.key === key)) {
+          periodicAnalysisGroups.push({ key, sorted: rows });
+        } else {
+          const g = periodicAnalysisGroups.find((g) => g.key === key);
+          rows.forEach((r) => { if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r); });
+          g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        }
+      })
+      .catch((e) => {
+        console.error("Falha ao carregar histórico periódico:", e);
+      });
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
@@ -2003,9 +2004,10 @@
     if (row) openComplianceHistoryDetail(row);
   });
 
-  $("#periodicAnalysisBody").addEventListener("click", (e) => {
-    const tr = e.target.closest("tr[data-periodic-key]");
+  document.addEventListener("click", (e) => {
+    const tr = e.target.closest("#periodicAnalysisBody tr[data-periodic-key]");
     if (!tr) return;
+    e.preventDefault();
     openComplianceModalForPeriodic(tr.dataset.periodicKey);
   });
 
