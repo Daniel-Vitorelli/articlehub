@@ -34,12 +34,14 @@
   let requestHistoryCache = {}; // request_id -> [history]
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
   let periodicSentinelObserver = null;
+  let periodicChunkBusy = false;         // bloqueia execução enquanto render está rodando
+  let periodicChunkQueued = false;       // se disparou enquanto busy, agenda retry
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
   const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.14";
+  const APP_VERSION = "1.4.15";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -3576,52 +3578,58 @@
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
 
-    // Caso 1: tem dados locais (em periodicAnalysisVisible) ainda não renderizados
-    if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-      teardownSentinelObserver();
-      const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
-      const holder = document.createElement("tbody");
-      holder.innerHTML = chunk.map(periodicRowHtml).join("");
-      while (holder.firstChild) tbody.appendChild(holder.firstChild);
-      periodicAnalysisLoaded += chunk.length;
-      updatePeriodicInfo();
-      updateBulkUI();
+    if (periodicChunkBusy) {
+      periodicChunkQueued = true;
+      return;
+    }
+    periodicChunkBusy = true;
 
-      const hasMoreLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
-      const hasMoreServer = periodicPrefetchOffset !== -1;
+    try {
+      const hasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
+      const hasServer = periodicPrefetchOffset !== -1;
 
-      // Garante que SEMPRE tem 1 página à frente carregando em background
-      if (hasMoreServer && !periodicPrefetchPromise && !hasMoreLocal) {
-        // Vamos acabar o local na próxima chamada, então antecipa o fetch
-        prefetchNextPage();
+      if (hasLocal) {
+        teardownSentinelObserver();
+        const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
+        const holder = document.createElement("tbody");
+        holder.innerHTML = chunk.map(periodicRowHtml).join("");
+        while (holder.firstChild) tbody.appendChild(holder.firstChild);
+        periodicAnalysisLoaded += chunk.length;
+        updatePeriodicInfo();
+        updateBulkUI();
+
+        // Se vai acabar o local, antecipa prefetch
+        const willEndLocal = periodicAnalysisLoaded >= periodicAnalysisVisible.length;
+        if (willEndLocal && hasServer && !periodicPrefetchPromise) {
+          prefetchNextPage();
+        }
+
+        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || hasServer) {
+          tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+          setupSentinelObserver();
+        } else {
+          teardownSentinelObserver();
+        }
+        return;
       }
 
-      if (hasMoreLocal || hasMoreServer) {
+      if (!hasLocal && hasServer) {
         tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
         setupSentinelObserver();
-      } else {
-        teardownSentinelObserver();
-      }
-      return;
-    }
-
-    // Caso 2: acabou o local mas servidor tem mais — busca próxima página
-    if (periodicPrefetchOffset !== -1) {
-      tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-      setupSentinelObserver();
-      if (!periodicPrefetchPromise) {
-        await prefetchNextPage();
-        if (periodicAnalysisVisible.length > periodicAnalysisLoaded) {
-          // Reaplica filtros (caso tenha novos dados) e renderiza o resto
-          applyPeriodicFilters();
-          renderPeriodicChunk();
+        if (!periodicPrefetchPromise) {
+          await prefetchNextPage();
         }
+        return;
       }
-      return;
-    }
 
-    // Caso 3: acabou tudo
-    teardownSentinelObserver();
+      teardownSentinelObserver();
+    } finally {
+      periodicChunkBusy = false;
+      if (periodicChunkQueued) {
+        periodicChunkQueued = false;
+        renderPeriodicChunk();
+      }
+    }
   }
 
   function updatePeriodicInfo() {
@@ -3674,12 +3682,11 @@
 
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
+    periodicChunkBusy = false;       // reseta flag caso um render anterior esteja pendente
+    periodicChunkQueued = false;
     if (!opts.preserveSelection) selectedPeriodicKeys.clear();
     updateBulkUI();
-    if (periodicSentinelObserver) {
-      periodicSentinelObserver.disconnect();
-      periodicSentinelObserver = null;
-    }
+    teardownSentinelObserver();
     try {
       const domainSelect = $("#filterPeriodicDomain");
       const currentDomain = domainSelect.value;
