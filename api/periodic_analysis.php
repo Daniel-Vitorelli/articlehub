@@ -51,12 +51,12 @@ if ($method === 'GET') {
     $status = trim($_GET['status'] ?? '');
     $postType = trim($_GET['post_type'] ?? '');
     $dominio = trim($_GET['dominio'] ?? '');
+    $withHistory = isset($_GET['with_history']); // inclui histórico leve (id, created_at, status_compliance) por grupo
 
     // Se tem paginação, retorna agrupado (latest por dominio+id_post) + paginado
     if ($limit > 0) {
         $where = [];
         $params = [];
-        $whereLatest = [];
         if ($status !== '') { $where[] = 'pa.status_compliance = ?'; $params[] = $status; }
         if ($postType !== '') { $where[] = 'pa.post_type = ?'; $params[] = $postType; }
         if ($dominio !== '') { $where[] = 'pa.dominio = ?'; $params[] = $dominio; }
@@ -66,7 +66,6 @@ if ($method === 'GET') {
         $latestSub = '(SELECT dominio, id_post, MAX(id) AS max_id FROM periodic_analysis GROUP BY dominio, id_post) AS latest';
 
         // Total agrupado: só calcula quando offset=0 (troca de filtro), não em cada scroll.
-        // Em scrolls subsequentes o frontend mantém o total do primeiro fetch.
         $total = null;
         if ($offset === 0) {
             $countSql = "SELECT COUNT(*) FROM periodic_analysis pa
@@ -90,6 +89,45 @@ if ($method === 'GET') {
         $stmt = $db->prepare($dataSql);
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
+
+        if ($withHistory && $rows) {
+            // Para cada row retornada, busca o histórico leve (id, created_at, status_compliance)
+            // limitado a 10 mais recentes usando o índice idx_periodic_group_lookup
+            $pairs = [];
+            $args = [];
+            foreach ($rows as $r) {
+                $pairs[] = '(pa.dominio = ? AND pa.id_post = ?)';
+                $args[] = $r->dominio;
+                $args[] = $r->id_post;
+            }
+            $pairsSql = implode(' OR ', $pairs);
+            // Seleciona top 10 por grupo usando variável de sessão MySQL
+            $histSql = "SELECT pa.dominio, pa.id_post, pa.id, pa.created_at, pa.status_compliance
+                        FROM (
+                            SELECT pa.*,
+                                   @row_num := IF(@prev_grp = CONCAT(pa.dominio,'::',pa.id_post),
+                                                  @row_num + 1, 1) AS rn,
+                                   @prev_grp := CONCAT(pa.dominio,'::',pa.id_post)
+                            FROM periodic_analysis pa
+                            WHERE $pairsSql
+                            ORDER BY pa.dominio, pa.id_post, pa.created_at DESC, pa.id DESC
+                        ) pa
+                        WHERE pa.rn <= 10";
+            $stmtH = $db->prepare($histSql);
+            $stmtH->execute($args);
+            $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
+            $byKey = [];
+            foreach ($histRows as $h) {
+                $k = $h['dominio'] . '::' . $h['id_post'];
+                if (!isset($byKey[$k])) $byKey[$k] = [];
+                $byKey[$k][] = $h;
+            }
+            foreach ($rows as $r) {
+                $k = $r->dominio . '::' . $r->id_post;
+                $r->history = $byKey[$k] ?? [];
+            }
+        }
+
         jsonResponse(200, ['data' => $rows, 'total' => $total]);
     }
 
