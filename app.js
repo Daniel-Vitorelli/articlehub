@@ -41,7 +41,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.23";
+  const APP_VERSION = "1.4.24";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1330,28 +1330,21 @@
 
   function renderComplianceResumo(text) {
     const raw = String(text || "").trim();
-    if (!raw) return "";
-
-    // Normaliza CRLF/LF para '\n' (evita cabeçalhos presos no \r)
+    if (!raw) return '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
     const normalized = raw.replace(/\r\n?/g, "\n");
-
-    // Divide mantendo o cabeçalho capturado; parts[0] = texto antes da 1ª seção
     const parts = normalized.split(/^(\[[^\]]+\]:)/m);
     if (parts.length <= 1) {
       return `<p class="compliance-section-body">${escapeHtml(raw)}</p>`;
     }
-
     let html = "";
-
-    // Texto introdutório antes da primeira seção (antes era descartado)
     const intro = (parts[0] || "").trim();
     if (intro) {
       html += `<p class="compliance-section-body">${escapeHtml(intro)}</p>`;
     }
-
     for (let i = 1; i < parts.length; i += 2) {
       const header = (parts[i] || "").trim();
-      const label = (header.match(/^\[([^\]]+)\]/) || [])[1] || "Análise";
+      const m = header.match(/^\[([^\]]+)\]/);
+      const label = m ? m[1] : "Análise";
       const displayLabel = label.replace(/[_\s]+/g, " ").trim() || "Análise";
       const body = (parts[i + 1] || "").trim();
       const bodyHtml = body
@@ -1485,21 +1478,29 @@
   function openComplianceModalForPeriodic(key) {
     const [dominio, idPost] = key.split("::");
     const group = periodicAnalysisGroups.find((g) => g.key === key);
-    const latest = group ? group.sorted[0] : null;
+    const sorted = group ? group.sorted : [];
 
     const modal = $("#modalCompliance");
     if (!modal) return;
+
+    // Renderização INSTANTÂNEA com dados em memória (group.sorted)
+    const latest = sorted[0] || null;
+    const historyRows = sorted.slice(1).map((h) => ({
+      created_at: h.created_at,
+      status_compliance: h.status_compliance,
+      resumo_analise: h.resumo_analise,
+    }));
 
     const resumoEl = $("#complianceResumo");
     if (resumoEl) {
       const txt = latest?.resumo_analise && String(latest.resumo_analise).trim() !== ""
         ? latest.resumo_analise
-        : "Carregando...";
+        : "—";
       resumoEl.innerHTML = renderComplianceResumo(txt);
     }
     const btn = $("#btnResetCompliance");
     if (btn) {
-      const hasData = latest && (latest.status_compliance || (latest.resumo_analise && String(latest.resumo_analise).trim() !== ""));
+      const hasData = !!latest && (latest.status_compliance || (latest.resumo_analise && String(latest.resumo_analise).trim() !== ""));
       btn.style.display = hasData ? "" : "none";
     }
     const histContainer = $("#complianceHistoryContainer");
@@ -1512,23 +1513,23 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
+    // Provider com dados em memória (instantâneo)
+    complianceHistoryProvider = { periodicKey: key, rows: historyRows };
+
+    // Refresh em background para pegar rows mais novos (não bloqueia UI)
     apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
       .then((rows) => {
         if (!rows?.length) return;
         if (modal.dataset.periodicKey !== key) return;
-
         rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        const latestRow = rows[0];
-        const historyRows = rows.slice(1).map((h) => ({
+        const newHistoryRows = rows.slice(1).map((h) => ({
           created_at: h.created_at,
           status_compliance: h.status_compliance,
           resumo_analise: h.resumo_analise,
         }));
+        complianceHistoryProvider = { periodicKey: key, rows: newHistoryRows };
 
-        if (resumoEl) resumoEl.innerHTML = renderComplianceResumo(latestRow.resumo_analise || "—");
-        if (btn) btn.style.display = (!!latestRow.status_compliance || (latestRow.resumo_analise?.trim())) ? "" : "none";
-        complianceHistoryProvider = { periodicKey: key, rows: historyRows };
-
+        // Atualiza cache em memória
         if (!periodicAnalysisGroups.find((g) => g.key === key)) {
           periodicAnalysisGroups.push({ key, sorted: rows });
         } else {
@@ -1537,9 +1538,7 @@
           g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         }
       })
-      .catch((e) => {
-        console.error("Falha ao carregar histórico periódico:", e);
-      });
+      .catch(() => {});
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
