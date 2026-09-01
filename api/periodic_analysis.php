@@ -26,23 +26,15 @@ if ($method === 'GET') {
     if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
         $dominioH = trim($_GET['dominio']);
         $idPostH = trim($_GET['id_post']);
-        $historyLimit = isset($_GET['history_limit']) ? max(1, min(50, (int)$_GET['history_limit'])) : 10;
-        $historyOffset = isset($_GET['history_offset']) ? max(0, (int)$_GET['history_offset']) : 0;
-        // Total
-        $stmt = $db->prepare('SELECT COUNT(*) FROM periodic_analysis WHERE dominio = ? AND id_post = ?');
-        $stmt->execute([$dominioH, $idPostH]);
-        $total = (int)$stmt->fetchColumn();
-        // Retorna só os campos leves: id, created_at, status_compliance
-        // (resumo_analise já está na listagem paginada / prefetch)
         $stmt = $db->prepare(
-            'SELECT pa.id, pa.created_at, pa.status_compliance, pa.dominio, pa.id_post
-             FROM periodic_analysis pa
-             WHERE pa.dominio = ? AND pa.id_post = ?
-             ORDER BY pa.created_at DESC, pa.id DESC
-             LIMIT ? OFFSET ?'
+            'SELECT id, created_at, status_compliance
+             FROM periodic_analysis
+             WHERE dominio = ? AND id_post = ?
+             ORDER BY created_at DESC, id DESC
+             LIMIT 50'
         );
-        $stmt->execute([$dominioH, $idPostH, $historyLimit, $historyOffset]);
-        jsonResponse(200, ['data' => $stmt->fetchAll(), 'total' => $total]);
+        $stmt->execute([$dominioH ?: null, $idPostH]);
+        jsonResponse(200, $stmt->fetchAll());
     }
 
     // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx
@@ -97,6 +89,7 @@ if ($method === 'GET') {
                 $domList = implode(',', array_fill(0, count($dominios), '?'));
                 $idList = implode(',', array_fill(0, count($ids), '?'));
                 $args = array_merge($dominios, $ids);
+                // Busca top 10 por grupo em uma única query, ordenado DESC
                 $stmtH = $db->prepare("SELECT id, dominio, id_post, created_at, status_compliance
                                        FROM periodic_analysis
                                        WHERE COALESCE(dominio,'') IN ($domList) AND id_post IN ($idList)
@@ -104,10 +97,15 @@ if ($method === 'GET') {
                 $stmtH->execute($args);
                 $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
                 $byKey = [];
+                $byKeyCount = [];
                 foreach ($histRows as $h) {
                     $k = ($h['dominio'] ?: '') . '::' . $h['id_post'];
-                    if (!isset($byKey[$k])) $byKey[$k] = [];
-                    if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
+                    if (!isset($byKeyCount[$k])) $byKeyCount[$k] = 0;
+                    if ($byKeyCount[$k] < 10) {
+                        if (!isset($byKey[$k])) $byKey[$k] = [];
+                        $byKey[$k][] = $h;
+                        $byKeyCount[$k]++;
+                    }
                 }
                 foreach ($rows as $r) {
                     $k = ($r->dominio ?: '') . '::' . $r->id_post;

@@ -42,7 +42,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.30";
+  const APP_VERSION = "1.4.31";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -258,6 +258,13 @@
         let g = groupsMap.get(key);
         if (!g) { g = { key, sorted: [] }; groupsMap.set(key, g); }
         g.sorted.push(r);
+        if (r.history && Array.isArray(r.history)) {
+            periodicHistoryCache[key] = r.history.map((h) => ({
+                created_at: h.created_at,
+                status_compliance: h.status_compliance,
+                resumo_analise: h.resumo_analise || "",
+            }));
+        }
     });
     periodicAnalysisGroups = [];
     groupsMap.forEach((g) => {
@@ -273,10 +280,10 @@
   // Envia with_history=1 para já trazer o histórico leve de cada grupo (até 10).
   function preloadPeriodicInBackground() {
     if (periodicLoadedPromise) return;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0&with_history=1`)
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
-        console.log('[Periodic] preload loaded', rows.length, 'groups, raw keys:', Object.keys(raw || {}));
+        console.log('[Periodic] preload loaded', rows.length, 'groups');
         buildPeriodicInMemory(rows);
         periodicPrefetchOffset = rows.length;
         if (rows.length === 0) periodicPrefetchOffset = -1;
@@ -317,7 +324,7 @@
     periodicPrefetchBusy = true;
     try {
       const offset = periodicPrefetchOffset;
-      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}`);
+      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}&with_history=1`);
       const rows = Array.isArray(raw) ? raw : (raw?.data || []);
       if (!rows.length) { periodicPrefetchOffset = -1; return 0; }
       appendPeriodicRows(rows);
@@ -342,7 +349,20 @@
       if (existing) {
         existing.sorted.unshift(r);
         existing.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        if (r.history && Array.isArray(r.history) && periodicHistoryCache[key] === undefined) {
+          periodicHistoryCache[key] = r.history.map((h) => ({
+            created_at: h.created_at,
+            status_compliance: h.status_compliance,
+            resumo_analise: h.resumo_analise || "",
+          }));
+        }
       } else {
+        const histRows = (r.history && Array.isArray(r.history)) ? r.history.map((h) => ({
+          created_at: h.created_at,
+          status_compliance: h.status_compliance,
+          resumo_analise: h.resumo_analise || "",
+        })) : undefined;
+        if (histRows) periodicHistoryCache[key] = histRows;
         periodicAnalysisGroups.push({ key, sorted: [r] });
       }
     });
@@ -364,7 +384,7 @@
   function ensurePeriodicLoaded() {
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0&with_history=1`)
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
         buildPeriodicInMemory(rows);
@@ -1511,17 +1531,17 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    // Histórico em cache? usa. Senão busca sob demanda.
+    // Histórico em cache? usa. Senão busca e atualiza quando chegar.
     if (historyRows.length) {
       complianceHistoryProvider = { periodicKey: key, rows: historyRows };
       if (histBody) histBody.innerHTML = "";
       renderComplianceHistoryRows(historyRows);
-      if (emptyEl) emptyEl.style.display = "";
+      if (emptyEl) emptyEl.style.display = historyRows.length ? "none" : "";
     } else {
-      // Sem histórico em cache: mostra spinner e busca
       if (histBody) histBody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span></td></tr>`;
       if (emptyEl) emptyEl.style.display = "none";
       complianceHistoryProvider = { periodicKey: key, rows: [] };
+      // Busca e atualiza modal quando chegar
       apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
         .then((raw) => {
           if (modal.dataset.periodicKey !== key) return;
@@ -1538,6 +1558,7 @@
           if (emptyEl) emptyEl.style.display = historyOnly.length ? "none" : "";
         })
         .catch(() => {
+          periodicHistoryCache[key] = [];
           if (histBody) histBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--accent-danger)">Erro</td></tr>`;
         });
     }
