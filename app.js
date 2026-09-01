@@ -41,7 +41,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.19";
+  const APP_VERSION = "1.4.20";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1611,24 +1611,11 @@
         periodicAnalysisLoaded = toRender.length;
         const infoEl = document.getElementById("periodicAnalysisInfo");
         if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-        if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-          if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-          periodicSentinelObserver = new IntersectionObserver(
-            (entries) => {
-              if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-            },
-            { rootMargin: PERIODIC_SENTINEL_MARGIN },
-          );
-          let sentinel = document.getElementById("periodicScrollSentinel");
-          if (!sentinel) {
-            tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-            sentinel = document.getElementById("periodicScrollSentinel");
-          }
-          if (sentinel) periodicSentinelObserver.observe(sentinel);
+        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
+          insertSentinel(tbody);
+          setupSentinelObserver();
         } else {
-          if (periodicSentinelObserver) { periodicSentinelObserver.disconnect(); periodicSentinelObserver = null; }
-          const s = document.getElementById("periodicScrollSentinel");
-          if (s) s.remove();
+          teardownSentinelObserver();
         }
         syncPeriodicAllFromGroups();
         requestAnimationFrame(() => {
@@ -3580,6 +3567,12 @@
     return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
   }
 
+  function insertSentinel(tbody) {
+    const existing = document.getElementById("periodicScrollSentinel");
+    if (existing) existing.remove();
+    tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+  }
+
   async function renderPeriodicChunk() {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
@@ -3588,20 +3581,9 @@
     periodicChunkBusy = true;
 
     try {
-      let hasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
-      let hasServer = periodicPrefetchOffset !== -1;
-
-      if (!hasLocal && hasServer) {
-        tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-        setupSentinelObserver();
-        if (!periodicPrefetchBusy) prefetchNextPage();
-        return;
-      }
+      const hasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
 
       if (hasLocal) {
-        const sentinel = document.getElementById("periodicScrollSentinel");
-        if (sentinel) sentinel.remove();
-
         const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
         const holder = document.createElement("tbody");
         holder.innerHTML = chunk.map(periodicRowHtml).join("");
@@ -3610,14 +3592,21 @@
         updatePeriodicInfo();
         updateBulkUI();
 
-        if (hasServer && !periodicPrefetchBusy) prefetchNextPage();
+        if (periodicPrefetchOffset !== -1 && !periodicPrefetchBusy) prefetchNextPage();
 
-        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || hasServer) {
-          tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
+          insertSentinel(tbody);
           setupSentinelObserver();
         } else {
           teardownSentinelObserver();
         }
+        return;
+      }
+
+      if (periodicPrefetchOffset !== -1) {
+        insertSentinel(tbody);
+        setupSentinelObserver();
+        if (!periodicPrefetchBusy) prefetchNextPage();
         return;
       }
 
@@ -3631,9 +3620,19 @@
     }
   }
 
-  function insertSentinelIfMissing(tbody) {
-    if (document.getElementById("periodicScrollSentinel")) return;
-    tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+  async function prefetchNextPage() {
+    if (periodicPrefetchOffset === -1) return;
+    if (periodicPrefetchBusy) return;
+    periodicPrefetchBusy = true;
+    try {
+      const offset = periodicPrefetchOffset;
+      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}`);
+      const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+      if (!rows.length) { periodicPrefetchOffset = -1; return; }
+      appendPeriodicRows(rows);
+      periodicPrefetchOffset = offset + rows.length;
+    } catch { }
+    finally { periodicPrefetchBusy = false; }
   }
 
   function removeSentinel() {
