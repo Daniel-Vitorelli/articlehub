@@ -86,6 +86,21 @@ if ($method === 'GET') {
     }
 
     // Fallback sem paginação (compatível com frontend antigo)
+    // ?history=1&dominio=X&id_post=Y → retorna histórico completo de um grupo
+    if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
+        $dominio = trim($_GET['dominio']);
+        $idPost = $_GET['id_post'];
+        $stmt = $db->prepare(
+            'SELECT pa.*, d.url AS dominio_url
+             FROM periodic_analysis pa
+             LEFT JOIN domains d ON d.blog_name = pa.dominio
+             WHERE pa.dominio = ? AND pa.id_post = ?
+             ORDER BY pa.created_at DESC, pa.id DESC'
+        );
+        $stmt->execute([$dominio, $idPost]);
+        jsonResponse(200, $stmt->fetchAll());
+    }
+
     $stmt = $db->query(
         'SELECT pa.*, d.url AS dominio_url
          FROM periodic_analysis pa

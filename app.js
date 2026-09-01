@@ -41,7 +41,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.16";
+  const APP_VERSION = "1.4.17";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1369,7 +1369,8 @@
     if (histContainer) histContainer.style.display = "none";
     const histBtn = $("#btnToggleComplianceHistory");
     if (histBtn) histBtn.textContent = "📜 Ver Histórico";
-    complianceHistoryProvider = opts.historyRows || (id ? (complianceHistoryCache[id] || null) : null);
+    // Para requests normais, usa cache. Para periodic, deixa null (openComplianceModalForPeriodic controla).
+    complianceHistoryProvider = id ? (complianceHistoryCache[id] || null) : null;
     const modalEl = document.getElementById("modalCompliance");
     modalEl.dataset.requestId = id || "";
     // Limpa contexto periódico: garante que modais de requests nunca
@@ -1385,14 +1386,40 @@
     const hidden =
       container.style.display === "none" || container.style.display === "";
     if (hidden) {
-      if (complianceHistoryProvider) {
+      const modalEl = document.getElementById("modalCompliance");
+      const periodicKey = modalEl?.dataset?.periodicKey;
+
+      if (periodicKey) {
+        // Modal de análise periódica: usa complianceHistoryProvider se já carregado,
+        // senão busca via API
+        if (complianceHistoryProvider && complianceHistoryProvider.length > 0) {
+          renderComplianceHistoryRows(complianceHistoryProvider);
+        } else {
+          // Mostra spinner enquanto carrega
+          const tbody = $("#complianceHistoryBody");
+          const emptyEl = $("#complianceHistoryEmpty");
+          if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span> Carregando histórico...</td></tr>`;
+          if (emptyEl) emptyEl.style.display = "none";
+          const [dominio, idPost] = periodicKey.split("::");
+          try {
+            const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
+            const historyRows = (rows || []).slice(1).map((h) => ({
+              created_at: h.created_at,
+              status_compliance: h.status_compliance,
+              resumo_analise: h.resumo_analise,
+            }));
+            complianceHistoryProvider = historyRows;
+            renderComplianceHistoryRows(historyRows);
+          } catch (e) {
+            console.error("Falha ao carregar histórico periódico:", e);
+            if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem; color:var(--accent-danger);">Erro ao carregar histórico</td></tr>`;
+          }
+        }
+      } else if (complianceHistoryProvider && complianceHistoryProvider.length > 0) {
         renderComplianceHistoryRows(complianceHistoryProvider);
       } else {
-        const id = Number(
-          document.getElementById("modalCompliance").dataset.requestId,
-        );
+        const id = Number(modalEl?.dataset?.requestId);
         if (!id) return;
-        // Cache pré-carregado no login → instantâneo; senão busca sob demanda
         const cached = complianceHistoryCache[id];
         if (cached) {
           renderComplianceHistoryRows(cached);
@@ -1448,72 +1475,57 @@
 
   async function openComplianceModalForPeriodic(key) {
     const [dominio, idPost] = key.split("::");
-    let group = periodicAnalysisGroups.find((g) => g.key === key);
-    let latest = group ? group.sorted[0] : null;
-    let historyRows = group ? group.sorted.slice(1).map((h) => ({
-        created_at: h.created_at,
-        status_compliance: h.status_compliance,
-        resumo_analise: h.resumo_analise,
-      })) : [];
+    const group = periodicAnalysisGroups.find((g) => g.key === key);
+    const latest = group ? group.sorted[0] : null;
 
-    // Se já temos o latest em memória (grupo carregado), abre instantâneo
-    if (latest) {
-      await openComplianceModal(null, {
-        resumo: latest.resumo_analise,
-        status: latest.status_compliance,
-        historyRows,
-        showReset: true,
-      });
-      const modal = $("#modalCompliance");
-      modal.dataset.periodicKey = key;
-      modal.dataset.requestId = "";
-      return;
-    }
+    // Abre modal IMEDIATAMENTE com o que tem em memória (a última análise)
+    await openComplianceModal(null, {
+      resumo: latest ? latest.resumo_analise : "Carregando histórico...",
+      status: latest ? latest.status_compliance : "",
+      historyRows: [],
+      showReset: !!latest,
+    });
+    const modal = $("#modalCompliance");
+    modal.dataset.periodicKey = key;
+    modal.dataset.requestId = "";
 
-    // Sem dados em memória: abre NA HORA com "Carregando..." e busca histórico em background
-    if (!latest) {
-      await openComplianceModal(null, {
-        resumo: "Carregando histórico...",
-        status: "",
-        historyRows: [],
-        showReset: false,
-      });
-      const modal = $("#modalCompliance");
-      modal.dataset.periodicKey = key;
-      modal.dataset.requestId = "";
-    }
-
-    // Busca histórico lazy sem travar a abertura
+    // Busca histórico completo em background
     try {
       const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
       if (rows && rows.length) {
         rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        latest = rows[0];
-        historyRows = rows.slice(1).map((h) => ({
+        const latestRow = rows[0];
+        const historyRows = rows.slice(1).map((h) => ({
           created_at: h.created_at,
           status_compliance: h.status_compliance,
           resumo_analise: h.resumo_analise,
         }));
-        // Preenche o modal já aberto
+
+        // Só atualiza se o modal ainda estiver aberto para este mesmo key
+        if (modal.dataset.periodicKey !== key) return;
+
+        // Atualiza resumo principal (caso tenha mudado)
         const el = $("#complianceResumo");
-        if (el) el.innerHTML = renderComplianceResumo(latest.resumo_analise || "—");
+        if (el) el.innerHTML = renderComplianceResumo(latestRow.resumo_analise || "—");
         const btn = $("#btnResetCompliance");
-        const has2 = !!latest.status_compliance || (latest.resumo_analise && String(latest.resumo_analise).trim() !== "");
+        const has2 = !!latestRow.status_compliance || (latestRow.resumo_analise && String(latestRow.resumo_analise).trim() !== "");
         if (btn) btn.style.display = has2 ? "" : "none";
+        // Disponibiliza histórico para o botão "Ver Histórico"
         complianceHistoryProvider = historyRows;
-        // Atualiza cache para reuso
-        if (!group) {
-          group = { key, sorted: rows };
-          periodicAnalysisGroups.push(group);
+
+        // Atualiza o cache em memória com o histórico completo
+        if (!periodicAnalysisGroups.find((g) => g.key === key)) {
+          periodicAnalysisGroups.push({ key, sorted: rows });
         } else {
+          const g = periodicAnalysisGroups.find((g) => g.key === key);
           rows.forEach((r) => {
-            if (!group.sorted.find((x) => x.id === r.id)) group.sorted.push(r);
+            if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r);
           });
-          group.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
         }
       }
     } catch (e) {
-      console.error("Falha ao carregar histórico periódico lazy:", e);
+      console.error("Falha ao carregar histórico periódico:", e);
     }
   }
 
@@ -3593,8 +3605,9 @@
         updatePeriodicInfo();
         updateBulkUI();
 
-        const willEndLocal = periodicAnalysisLoaded >= periodicAnalysisVisible.length;
-        if (willEndLocal && hasServer && !periodicPrefetchPromise) {
+        // Sempre que renderiza um chunk, busca mais do servidor em background
+        // se ainda tiver dados e não tiver promise em andamento.
+        if (hasServer && !periodicPrefetchPromise) {
           prefetchNextPage();
         }
 
