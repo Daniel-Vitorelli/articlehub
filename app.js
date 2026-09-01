@@ -41,7 +41,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.21";
+  const APP_VERSION = "1.4.22";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1490,23 +1490,28 @@
     const modal = $("#modalCompliance");
     if (!modal) return;
 
-    // Prepara o DOM do modal ANTES de abrir
     const resumoEl = $("#complianceResumo");
-    if (resumoEl) resumoEl.innerHTML = renderComplianceResumo(latest ? (latest.resumo_analise || "—") : "Carregando...");
+    if (resumoEl) {
+      const txt = latest?.resumo_analise && String(latest.resumo_analise).trim() !== ""
+        ? latest.resumo_analise
+        : "Carregando histórico...";
+      resumoEl.innerHTML = renderComplianceResumo(txt);
+    }
     const btn = $("#btnResetCompliance");
-    if (btn) btn.style.display = latest ? "" : "none";
+    if (btn) {
+      const hasData = latest && (latest.status_compliance || (latest.resumo_analise && String(latest.resumo_analise).trim() !== ""));
+      btn.style.display = hasData ? "" : "none";
+    }
     const histContainer = $("#complianceHistoryContainer");
     if (histContainer) histContainer.style.display = "none";
     const histBtn = $("#btnToggleComplianceHistory");
     if (histBtn) histBtn.textContent = "📜 Ver Histórico";
 
-    // Seta flags ANTES de abrir
     modal.dataset.periodicKey = key;
     modal.dataset.requestId = "";
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    // Busca histórico em background
     try {
       const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
       if (!rows?.length) return;
@@ -1999,8 +2004,9 @@
   });
 
   $("#periodicAnalysisBody").addEventListener("click", (e) => {
-    const el = e.target.closest("[data-key]");
-    if (el) openComplianceModalForPeriodic(el.dataset.key);
+    const tr = e.target.closest("tr[data-periodic-key]");
+    if (!tr) return;
+    openComplianceModalForPeriodic(tr.dataset.periodicKey);
   });
 
   // Foco visual na linha da análise periódica (sem mudar layout)
@@ -3560,7 +3566,7 @@
         <td>${typeBadge}</td>
         <td>${
           status
-            ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? " compliance-clickable" : ""}" ${hasResumo ? `data-key="${escapeAttr(key)}" title="Ver resumo e histórico da análise"` : ""}>${complianceStatusLabel(status)}</span>`
+            ? `<span class="status-badge ${escapeHtml(status)}${hasResumo ? " compliance-clickable" : ""}" data-key="${escapeAttr(key)}" title="${hasResumo ? "Ver resumo e histórico da análise" : "Ver histórico da análise"}">${complianceStatusLabel(status)}</span>`
             : "—"
         }</td>
         <td>${publishStatusBadge(r.publish_status)}</td>
