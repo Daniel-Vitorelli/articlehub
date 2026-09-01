@@ -37,7 +37,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.12";
+  const APP_VERSION = "1.4.13";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -249,18 +249,17 @@
     const rows = Array.isArray(raw) ? raw : (raw && raw.data ? raw.data : []);
     const groupsMap = new Map();
     rows.forEach((r) => {
-      const key = `${r.dominio}::${r.id_post ?? ""}`;
-      let g = groupsMap.get(key);
-      if (!g) { g = { key, sorted: [] }; groupsMap.set(key, g); }
-      g.sorted.push(r);
+        const key = `${r.dominio}::${r.id_post ?? ""}`;
+        let g = groupsMap.get(key);
+        if (!g) { g = { key, sorted: [] }; groupsMap.set(key, g); }
+        g.sorted.push(r);
     });
     periodicAnalysisGroups = [];
     groupsMap.forEach((g) => {
-      g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      periodicAnalysisGroups.push(g);
+        g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        periodicAnalysisGroups.push(g);
     });
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
-    // Cache de filtros (distinct) derivado dos dados em memória (sem rede)
     periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
   }
