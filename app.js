@@ -41,7 +41,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.15";
+  const APP_VERSION = "1.4.16";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1700,6 +1700,8 @@
     periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
     syncPeriodicAllFromGroups();
     periodicAnalysisLoaded = 0;
+    periodicChunkBusy = false;
+    periodicChunkQueued = false;
     const tb = document.getElementById("periodicAnalysisBody");
     if (tb) {
       const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
@@ -1710,18 +1712,9 @@
       periodicAnalysisLoaded = toRender.length;
       const infoEl = document.getElementById("periodicAnalysisInfo");
       if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-      if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-        if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-        periodicSentinelObserver = new IntersectionObserver(
-          (entries) => { if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk(); },
-          { rootMargin: PERIODIC_SENTINEL_MARGIN },
-        );
-        let sentinel = document.getElementById("periodicScrollSentinel");
-        if (!sentinel) {
-          tb.insertAdjacentHTML("beforeend", periodicSentinelRow());
-          sentinel = document.getElementById("periodicScrollSentinel");
-        }
-        if (sentinel) periodicSentinelObserver.observe(sentinel);
+      if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
+        insertSentinelIfMissing(tb);
+        setupSentinelObserver();
       }
     }
 
@@ -3589,7 +3582,9 @@
       const hasServer = periodicPrefetchOffset !== -1;
 
       if (hasLocal) {
-        teardownSentinelObserver();
+        const sentinel = document.getElementById("periodicScrollSentinel");
+        if (sentinel) sentinel.remove();
+
         const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
         const holder = document.createElement("tbody");
         holder.innerHTML = chunk.map(periodicRowHtml).join("");
@@ -3598,23 +3593,21 @@
         updatePeriodicInfo();
         updateBulkUI();
 
-        // Se vai acabar o local, antecipa prefetch
         const willEndLocal = periodicAnalysisLoaded >= periodicAnalysisVisible.length;
         if (willEndLocal && hasServer && !periodicPrefetchPromise) {
           prefetchNextPage();
         }
 
-        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || hasServer) {
-          tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+        const stillHasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
+        if (stillHasLocal || hasServer) {
+          insertSentinelIfMissing(tbody);
           setupSentinelObserver();
-        } else {
-          teardownSentinelObserver();
         }
         return;
       }
 
       if (!hasLocal && hasServer) {
-        tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+        insertSentinelIfMissing(tbody);
         setupSentinelObserver();
         if (!periodicPrefetchPromise) {
           await prefetchNextPage();
@@ -3627,9 +3620,20 @@
       periodicChunkBusy = false;
       if (periodicChunkQueued) {
         periodicChunkQueued = false;
-        renderPeriodicChunk();
+        // Pequeno delay para garantir que DOM foi aplicado
+        requestAnimationFrame(() => renderPeriodicChunk());
       }
     }
+  }
+
+  function insertSentinelIfMissing(tbody) {
+    if (document.getElementById("periodicScrollSentinel")) return;
+    tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+  }
+
+  function removeSentinel() {
+    const s = document.getElementById("periodicScrollSentinel");
+    if (s) s.remove();
   }
 
   function updatePeriodicInfo() {
@@ -3640,15 +3644,29 @@
     }
   }
 
+  // Observer único e persistente. Usa "geração" para evitar disparo imediato
+  // quando o sentinel é reinserido JÁ DENTRO da viewport (após um render).
+  let sentinelObserverGen = 0; // incrementa a cada setup, ignora o 1º disparo de cada gen
+  let sentinelObservedGen = -1; // última geração que já disparou
+
   function setupSentinelObserver() {
     const sentinel = document.getElementById("periodicScrollSentinel");
     if (!sentinel) return;
-    if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+
+    if (periodicSentinelObserver) {
+      periodicSentinelObserver.disconnect();
+    }
+    sentinelObserverGen++;
+    const myGen = sentinelObserverGen;
     periodicSentinelObserver = new IntersectionObserver(
       (entries) => {
-        if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+        if (entries.some((e) => e.isIntersecting)) {
+          if (myGen === sentinelObservedGen) return; // já disparou para esta geração
+          sentinelObservedGen = myGen;
+          renderPeriodicChunk();
+        }
       },
-      { rootMargin: PERIODIC_SENTINEL_MARGIN },
+      { rootMargin: PERIODIC_SENTINEL_MARGIN, threshold: 0 },
     );
     periodicSentinelObserver.observe(sentinel);
   }
@@ -3658,8 +3676,9 @@
       periodicSentinelObserver.disconnect();
       periodicSentinelObserver = null;
     }
-    const s = document.getElementById("periodicScrollSentinel");
-    if (s) s.remove();
+    removeSentinel();
+    sentinelObserverGen++;
+    sentinelObservedGen = -1;
   }
 
   async function renderComplianceAnalysis(opts = {}) {
@@ -3708,6 +3727,7 @@
       }
 
       tbody.innerHTML = "";
+      removeSentinel();
       renderPeriodicChunk();
     } catch (e) {
       console.error("Erro ao carregar análises periódicas:", e);
