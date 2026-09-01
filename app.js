@@ -29,15 +29,17 @@
   let periodicAnalysisLoaded = 0;
   let periodicAnalysisTotal = 0;
   let periodicLoadedPromise = null;
+  let periodicPrefetchOffset = 0;       // próximo offset a buscar em background
+  let periodicPrefetchPromise = null;   // promise do prefetch em andamento
   let requestHistoryCache = {}; // request_id -> [history]
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
   let periodicSentinelObserver = null;
-  const PERIODIC_PAGE_SIZE = 50;
-  const PERIODIC_BACKEND_PAGE = 200; // quantos grupos buscar por request no preload
+  const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
+  const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.13";
+  const APP_VERSION = "1.4.14";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -266,34 +268,71 @@
 
   // Pré-carrega análise periódica em background após o login (não-bloqueante).
   // Não aguarda: quando o usuário clicar na aba, já estará em memória.
+  // Pré-carrega só a PRIMEIRA página em background (não-bloqueante).
+  // Dados já estarão disponíveis quando o usuário clicar na aba.
   function preloadPeriodicInBackground() {
     if (periodicLoadedPromise) return;
-    periodicLoadedPromise = loadAllPeriodicPaginated()
-      .then((allRows) => buildPeriodicInMemory(allRows))
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+      .then((raw) => {
+        const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+        buildPeriodicInMemory(rows);
+        periodicPrefetchOffset = rows.length;
+        periodicPrefetchPromise = prefetchNextPage();
+      })
       .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
   }
 
-  async function loadAllPeriodicPaginated() {
-    const allRows = [];
-    let offset = 0;
-    const pageSize = PERIODIC_BACKEND_PAGE;
-    while (true) {
-      const raw = await apiGet(`periodic_analysis.php?limit=${pageSize}&offset=${offset}`);
-      const rows = Array.isArray(raw) ? raw : (raw?.data || []);
-      if (!rows.length) break;
-      allRows.push(...rows);
-      if (rows.length < pageSize) break;
-      offset += pageSize;
-    }
-    return allRows;
+  // Busca a próxima página em background (fire-and-forget).
+  // Chamado automaticamente após cada render de chunk.
+  function prefetchNextPage() {
+    if (periodicPrefetchPromise) return periodicPrefetchPromise;
+    periodicPrefetchPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${periodicPrefetchOffset}`)
+      .then((raw) => {
+        const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+        if (!rows.length) {
+          periodicPrefetchOffset = -1; // sinaliza que acabou
+          periodicPrefetchPromise = null;
+          return;
+        }
+        appendPeriodicRows(rows);
+        periodicPrefetchOffset += rows.length;
+        periodicPrefetchPromise = null;
+      })
+      .catch(() => {
+        periodicPrefetchPromise = null;
+      });
+    return periodicPrefetchPromise;
+  }
+
+  // Insere rows adicionais nos groups existentes (sem re-renderizar).
+  // Mantém periodicAnalysisAll e os caches sincronizados.
+  function appendPeriodicRows(newRows) {
+    if (!newRows.length) return;
+    newRows.forEach((r) => {
+      const key = `${r.dominio}::${r.id_post ?? ""}`;
+      const existing = periodicAnalysisGroups.find((g) => g.key === key);
+      if (existing) {
+        existing.sorted.unshift(r);
+        existing.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      } else {
+        periodicAnalysisGroups.push({ key, sorted: [r] });
+      }
+    });
+    periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
+    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
+    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
   }
 
   function ensurePeriodicLoaded() {
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
-    periodicLoadedPromise = loadAllPeriodicPaginated()
-      .then((allRows) => buildPeriodicInMemory(allRows))
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+      .then((raw) => {
+        const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+        buildPeriodicInMemory(rows);
+        periodicPrefetchOffset = rows.length;
+      })
       .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
     return periodicLoadedPromise;
@@ -3533,102 +3572,100 @@
     return `<tr id="periodicScrollSentinel" class="scroll-sentinel"><td colspan="8"><div class="scroll-sentinel-inner"><span class="spinner"></span> Carregando mais análises…</div></td></tr>`;
   }
 
-  // Reconstrói a lista visível filtrada a partir do cache em memória (sem rede).
-  // periodicAnalysisAll = latest row por grupo; filtros aplicados client-side.
-  async function fetchNextPeriodicPage() {
-    const statusFilter = $("#filterPeriodicStatus")?.value || "";
-    const typeFilter = $("#filterPeriodicType")?.value || "";
-    const domainFilter = $("#filterPeriodicDomain")?.value || "";
-    const filtered = periodicAnalysisAll.filter(
-      (r) =>
-        (!statusFilter || r.status_compliance === statusFilter) &&
-        (!typeFilter || r.post_type === typeFilter) &&
-        (!domainFilter || r.dominio === domainFilter),
-    );
-    periodicAnalysisVisible = filtered;
-    periodicAnalysisTotal = filtered.length;
-    return filtered;
-  }
-
   async function renderPeriodicChunk() {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
 
-    // Se já tem dados em Visible não renderizados, renderiza chunk local
+    // Caso 1: tem dados locais (em periodicAnalysisVisible) ainda não renderizados
     if (periodicAnalysisLoaded < periodicAnalysisVisible.length) {
-      const sentinel = document.getElementById("periodicScrollSentinel");
-      if (sentinel) sentinel.remove();
+      teardownSentinelObserver();
       const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
       const holder = document.createElement("tbody");
       holder.innerHTML = chunk.map(periodicRowHtml).join("");
       while (holder.firstChild) tbody.appendChild(holder.firstChild);
       periodicAnalysisLoaded += chunk.length;
-      $("#periodicAnalysisInfo").textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisTotal} análises`;
+      updatePeriodicInfo();
       updateBulkUI();
-      if (periodicAnalysisLoaded < periodicAnalysisTotal) {
+
+      const hasMoreLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
+      const hasMoreServer = periodicPrefetchOffset !== -1;
+
+      // Garante que SEMPRE tem 1 página à frente carregando em background
+      if (hasMoreServer && !periodicPrefetchPromise && !hasMoreLocal) {
+        // Vamos acabar o local na próxima chamada, então antecipa o fetch
+        prefetchNextPage();
+      }
+
+      if (hasMoreLocal || hasMoreServer) {
         tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-        if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
-        periodicSentinelObserver = new IntersectionObserver(
-          (entries) => {
-            if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
-          },
-          { rootMargin: PERIODIC_SENTINEL_MARGIN },
-        );
-        periodicSentinelObserver.observe(document.getElementById("periodicScrollSentinel"));
+        setupSentinelObserver();
       } else {
-        if (periodicSentinelObserver) {
-          periodicSentinelObserver.disconnect();
-          periodicSentinelObserver = null;
-        }
-        const s = document.getElementById("periodicScrollSentinel");
-        if (s) s.remove();
+        teardownSentinelObserver();
       }
       return;
     }
 
-    // Se Visible esgotado mas ainda há mais no backend, busca próxima página (imperceptível)
-    if (periodicAnalysisLoaded < periodicAnalysisTotal) {
-      const sentinel = document.getElementById("periodicScrollSentinel");
-      if (sentinel) sentinel.remove();
+    // Caso 2: acabou o local mas servidor tem mais — busca próxima página
+    if (periodicPrefetchOffset !== -1) {
       tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
-      try {
-        await fetchNextPeriodicPage();
-        const s2 = document.getElementById("periodicScrollSentinel");
-        if (s2) s2.remove();
-        // Recursivo: agora tem dados em Visible, renderiza
-        renderPeriodicChunk();
-      } catch (e) {
-        console.error("Erro ao paginar análises:", e);
-        const s2 = document.getElementById("periodicScrollSentinel");
-        if (s2) s2.remove();
+      setupSentinelObserver();
+      if (!periodicPrefetchPromise) {
+        await prefetchNextPage();
+        if (periodicAnalysisVisible.length > periodicAnalysisLoaded) {
+          // Reaplica filtros (caso tenha novos dados) e renderiza o resto
+          applyPeriodicFilters();
+          renderPeriodicChunk();
+        }
       }
       return;
     }
 
-    // Fim
+    // Caso 3: acabou tudo
+    teardownSentinelObserver();
+  }
+
+  function updatePeriodicInfo() {
+    const infoEl = $("#periodicAnalysisInfo");
+    if (infoEl) {
+      const local = periodicAnalysisVisible.length;
+      infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${local} análises`;
+    }
+  }
+
+  function setupSentinelObserver() {
+    const sentinel = document.getElementById("periodicScrollSentinel");
+    if (!sentinel) return;
+    if (periodicSentinelObserver) periodicSentinelObserver.disconnect();
+    periodicSentinelObserver = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) renderPeriodicChunk();
+      },
+      { rootMargin: PERIODIC_SENTINEL_MARGIN },
+    );
+    periodicSentinelObserver.observe(sentinel);
+  }
+
+  function teardownSentinelObserver() {
     if (periodicSentinelObserver) {
       periodicSentinelObserver.disconnect();
       periodicSentinelObserver = null;
     }
-    const sentinel = document.getElementById("periodicScrollSentinel");
-    if (sentinel) sentinel.remove();
+    const s = document.getElementById("periodicScrollSentinel");
+    if (s) s.remove();
   }
 
   async function renderComplianceAnalysis(opts = {}) {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
 
-    const isAlreadyLoaded = periodicAnalysisAll.length > 0;
+    const hadData = periodicAnalysisAll.length > 0;
 
-    // Se NÃO tinha dados antes, mostra spinner (pode estar pré-carregando)
-    if (!isAlreadyLoaded) {
+    if (!hadData) {
       tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--text-muted)"><span class="spinner"></span> Carregando análises...</div></td></tr>`;
     }
 
-    // Espera dados do servidor (ou do preload em background)
     await ensurePeriodicLoaded();
 
-    // Verifica novamente: se agora TEM dados, renderiza. Se NÃO, mostra empty.
     if (periodicAnalysisAll.length === 0) {
       tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
       $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
@@ -3637,7 +3674,6 @@
 
     periodicAnalysisVisible = [];
     periodicAnalysisLoaded = 0;
-    periodicAnalysisTotal = 0;
     if (!opts.preserveSelection) selectedPeriodicKeys.clear();
     updateBulkUI();
     if (periodicSentinelObserver) {
@@ -3657,8 +3693,7 @@
       typeSelect.innerHTML = '<option value="">Todos Tipos</option>' + typeOpts.sort((a, b) => a.localeCompare(b)).map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`).join("");
       typeSelect.value = currentType;
 
-      await fetchNextPeriodicPage();
-
+      applyPeriodicFilters();
       if (!periodicAnalysisVisible.length) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
@@ -3671,6 +3706,20 @@
       console.error("Erro ao carregar análises periódicas:", e);
       tbody.innerHTML = `<tr><td colspan="8"><div style="text-align:center; padding:2rem; color:var(--accent-danger)">Erro ao carregar análises</div></td></tr>`;
     }
+  }
+
+  // Aplica filtros atuais em periodicAnalysisAll → periodicAnalysisVisible.
+  function applyPeriodicFilters() {
+    const statusFilter = $("#filterPeriodicStatus")?.value || "";
+    const typeFilter = $("#filterPeriodicType")?.value || "";
+    const domainFilter = $("#filterPeriodicDomain")?.value || "";
+    periodicAnalysisVisible = periodicAnalysisAll.filter(
+      (r) =>
+        (!statusFilter || r.status_compliance === statusFilter) &&
+        (!typeFilter || r.post_type === typeFilter) &&
+        (!domainFilter || r.dominio === domainFilter),
+    );
+    periodicAnalysisTotal = periodicAnalysisVisible.length;
   }
 
   async function renderMessages() {
