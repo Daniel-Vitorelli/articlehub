@@ -30,18 +30,18 @@
   let periodicAnalysisTotal = 0;
   let periodicLoadedPromise = null;
   let periodicPrefetchOffset = 0;       // próximo offset a buscar em background
-  let periodicPrefetchPromise = null;   // promise do prefetch em andamento
   let requestHistoryCache = {}; // request_id -> [history]
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
   let periodicSentinelObserver = null;
-  let periodicChunkBusy = false;         // bloqueia execução enquanto render está rodando
-  let periodicChunkQueued = false;       // se disparou enquanto busy, agenda retry
+  let periodicChunkBusy = false;
+  let periodicChunkQueued = false;
+  let periodicPrefetchBusy = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
-  const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
+  const PERIODIC_BACKEND_PAGE = 50;     // grupos buscados por request do backend (mantém alinhado com a UI)
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.18";
+  const APP_VERSION = "1.4.19";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -285,28 +285,25 @@
       .finally(() => { periodicLoadedPromise = null; });
   }
 
-  // Busca a próxima página em background (fire-and-forget).
-  // Chamado automaticamente após cada render de chunk.
-  function prefetchNextPage() {
-    if (periodicPrefetchOffset === -1) return Promise.resolve();
-    if (periodicPrefetchPromise) return periodicPrefetchPromise;
-    const offset = periodicPrefetchOffset;
-    periodicPrefetchPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}`)
-      .then((raw) => {
-        const rows = Array.isArray(raw) ? raw : (raw?.data || []);
-        if (!rows.length) {
-          periodicPrefetchOffset = -1;
-          periodicPrefetchPromise = null;
-          return;
-        }
-        appendPeriodicRows(rows);
-        periodicPrefetchOffset = offset + rows.length;
-        periodicPrefetchPromise = null;
-      })
-      .catch(() => {
-        periodicPrefetchPromise = null;
-      });
-    return periodicPrefetchPromise;
+  async function prefetchNextPage() {
+    if (periodicPrefetchOffset === -1) return 0;
+    if (periodicPrefetchBusy) return 0;
+    periodicPrefetchBusy = true;
+    try {
+      const offset = periodicPrefetchOffset;
+      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}`);
+      const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+      console.log(`[Periodic] prefetch offset=${offset} → ${rows.length} rows, visible=${periodicAnalysisVisible.length}, all=${periodicAnalysisAll.length}`);
+      if (!rows.length) { periodicPrefetchOffset = -1; return 0; }
+      appendPeriodicRows(rows);
+      periodicPrefetchOffset = offset + rows.length;
+      periodicPrefetchBusy = false;
+      requestAnimationFrame(() => renderPeriodicChunk());
+      return rows.length;
+    } catch {
+      periodicPrefetchBusy = false;
+      return 0;
+    }
   }
 
   // Insere rows adicionais nos groups existentes (sem re-renderizar).
@@ -326,7 +323,17 @@
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
     periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
-    periodicVisibleDirty = true;
+    // Atualiza também a lista visível respeitando filtros atuais
+    const statusFilter = $("#filterPeriodicStatus")?.value || "";
+    const typeFilter = $("#filterPeriodicType")?.value || "";
+    const domainFilter = $("#filterPeriodicDomain")?.value || "";
+    periodicAnalysisVisible = periodicAnalysisAll.filter(
+      (r) =>
+        (!statusFilter || r.status_compliance === statusFilter) &&
+        (!typeFilter || r.post_type === typeFilter) &&
+        (!domainFilter || r.dominio === domainFilter),
+    );
+    periodicAnalysisTotal = periodicAnalysisVisible.length;
   }
 
   function ensurePeriodicLoaded() {
@@ -343,11 +350,13 @@
     return periodicLoadedPromise;
   }
 
-  // Reconstrói periodicAnalysisAll a partir dos groups (após mutações locais)
+  // Reconstrói periodicAnalysisAll e periodicAnalysisVisible a partir dos groups
+  // (após mutações locais ou appends em background)
   function syncPeriodicAllFromGroups() {
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
     periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+    periodicAnalysisVisible = periodicAnalysisAll.slice();
   }
 
   // Recarrega a análise periódica do servidor (usado após reanálise em lote) silenciosamente
@@ -1474,11 +1483,13 @@
   }
 
   async function openComplianceModalForPeriodic(key) {
+    console.log("[Periodic] Abrindo modal para key:", key);
     const [dominio, idPost] = key.split("::");
     const group = periodicAnalysisGroups.find((g) => g.key === key);
     const latest = group ? group.sorted[0] : null;
 
     const modal = $("#modalCompliance");
+    if (!modal) { console.error("[Periodic] Modal não encontrado"); return; }
     modal.dataset.periodicKey = key;
     modal.dataset.requestId = "";
 
@@ -1490,8 +1501,8 @@
 
     try {
       const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
-      if (!rows?.length) return;
-      if (modal.dataset.periodicKey !== key) return;
+      if (!rows?.length) { console.log("[Periodic] Histórico vazio para", key); return; }
+      if (modal.dataset.periodicKey !== key) { console.log("[Periodic] Modal já mudou, ignorando"); return; }
 
       rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       const latestRow = rows[0];
@@ -1515,7 +1526,7 @@
         g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       }
     } catch (e) {
-      console.error("Falha ao carregar histórico periódico:", e);
+      console.error("[Periodic] Falha ao carregar histórico:", e);
     }
   }
 
@@ -3573,15 +3584,19 @@
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
 
-    if (periodicChunkBusy) {
-      periodicChunkQueued = true;
-      return;
-    }
+    if (periodicChunkBusy) { periodicChunkQueued = true; return; }
     periodicChunkBusy = true;
 
     try {
-      const hasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
-      const hasServer = periodicPrefetchOffset !== -1;
+      let hasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
+      let hasServer = periodicPrefetchOffset !== -1;
+
+      if (!hasLocal && hasServer) {
+        tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
+        setupSentinelObserver();
+        if (!periodicPrefetchBusy) prefetchNextPage();
+        return;
+      }
 
       if (hasLocal) {
         const sentinel = document.getElementById("periodicScrollSentinel");
@@ -3595,25 +3610,13 @@
         updatePeriodicInfo();
         updateBulkUI();
 
-        // Sempre que renderiza um chunk, busca mais do servidor em background
-        // se ainda tiver dados e não tiver promise em andamento.
-        if (hasServer && !periodicPrefetchPromise) {
-          prefetchNextPage();
-        }
+        if (hasServer && !periodicPrefetchBusy) prefetchNextPage();
 
-        const stillHasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
-        if (stillHasLocal || hasServer) {
-          insertSentinelIfMissing(tbody);
+        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || hasServer) {
+          tbody.insertAdjacentHTML("beforeend", periodicSentinelRow());
           setupSentinelObserver();
-        }
-        return;
-      }
-
-      if (!hasLocal && hasServer) {
-        insertSentinelIfMissing(tbody);
-        setupSentinelObserver();
-        if (!periodicPrefetchPromise) {
-          await prefetchNextPage();
+        } else {
+          teardownSentinelObserver();
         }
         return;
       }
@@ -3623,7 +3626,6 @@
       periodicChunkBusy = false;
       if (periodicChunkQueued) {
         periodicChunkQueued = false;
-        // Pequeno delay para garantir que DOM foi aplicado
         requestAnimationFrame(() => renderPeriodicChunk());
       }
     }
