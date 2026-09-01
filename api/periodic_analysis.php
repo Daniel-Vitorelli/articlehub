@@ -82,41 +82,6 @@ if ($method === 'GET') {
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
-        if ($withHistory && $rows) {
-            try {
-                $dominios = array_map(fn($r) => $r->dominio ?: '', $rows);
-                $ids = array_map(fn($r) => $r->id_post, $rows);
-                $domList = implode(',', array_fill(0, count($dominios), '?'));
-                $idList = implode(',', array_fill(0, count($ids), '?'));
-                $args = array_merge($dominios, $ids);
-                // Busca top 10 por grupo em uma única query, ordenado DESC
-                $stmtH = $db->prepare("SELECT id, dominio, id_post, created_at, status_compliance
-                                       FROM periodic_analysis
-                                       WHERE COALESCE(dominio,'') IN ($domList) AND id_post IN ($idList)
-                                       ORDER BY COALESCE(dominio,''), id_post, created_at DESC, id DESC");
-                $stmtH->execute($args);
-                $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
-                $byKey = [];
-                $byKeyCount = [];
-                foreach ($histRows as $h) {
-                    $k = ($h['dominio'] ?: '') . '::' . $h['id_post'];
-                    if (!isset($byKeyCount[$k])) $byKeyCount[$k] = 0;
-                    if ($byKeyCount[$k] < 10) {
-                        if (!isset($byKey[$k])) $byKey[$k] = [];
-                        $byKey[$k][] = $h;
-                        $byKeyCount[$k]++;
-                    }
-                }
-                foreach ($rows as $r) {
-                    $k = ($r->dominio ?: '') . '::' . $r->id_post;
-                    $r->history = $byKey[$k] ?? [];
-                }
-            } catch (Exception $e) {
-                error_log('[periodic_analysis] withHistory error: ' . $e->getMessage());
-                foreach ($rows as $r) { $r->history = []; }
-            }
-        }
-
         jsonResponse(200, ['data' => $rows, 'total' => $total]);
     }
 

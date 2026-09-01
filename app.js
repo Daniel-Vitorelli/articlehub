@@ -42,7 +42,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.31";
+  const APP_VERSION = "1.4.32";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -258,13 +258,6 @@
         let g = groupsMap.get(key);
         if (!g) { g = { key, sorted: [] }; groupsMap.set(key, g); }
         g.sorted.push(r);
-        if (r.history && Array.isArray(r.history)) {
-            periodicHistoryCache[key] = r.history.map((h) => ({
-                created_at: h.created_at,
-                status_compliance: h.status_compliance,
-                resumo_analise: h.resumo_analise || "",
-            }));
-        }
     });
     periodicAnalysisGroups = [];
     groupsMap.forEach((g) => {
@@ -277,18 +270,16 @@
   }
 
   // Pré-carrega análise periódica em background após o login (não-bloqueante).
-  // Envia with_history=1 para já trazer o histórico leve de cada grupo (até 10).
   function preloadPeriodicInBackground() {
     if (periodicLoadedPromise) return;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0&with_history=1`)
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
-        console.log('[Periodic] preload loaded', rows.length, 'groups');
         buildPeriodicInMemory(rows);
         periodicPrefetchOffset = rows.length;
         if (rows.length === 0) periodicPrefetchOffset = -1;
       })
-      .catch((e) => { console.error('[Periodic] preload failed:', e); })
+      .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
   }
 
@@ -324,7 +315,7 @@
     periodicPrefetchBusy = true;
     try {
       const offset = periodicPrefetchOffset;
-      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}&with_history=1`);
+      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}`);
       const rows = Array.isArray(raw) ? raw : (raw?.data || []);
       if (!rows.length) { periodicPrefetchOffset = -1; return 0; }
       appendPeriodicRows(rows);
@@ -340,7 +331,6 @@
 
   // Insere rows adicionais nos groups existentes (sem re-renderizar).
   // Mantém periodicAnalysisAll e os caches sincronizados.
-  // Também prefetcha o histórico dos novos grupos (instantâneo ao abrir modal depois).
   function appendPeriodicRows(newRows) {
     if (!newRows.length) return;
     newRows.forEach((r) => {
@@ -349,20 +339,7 @@
       if (existing) {
         existing.sorted.unshift(r);
         existing.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        if (r.history && Array.isArray(r.history) && periodicHistoryCache[key] === undefined) {
-          periodicHistoryCache[key] = r.history.map((h) => ({
-            created_at: h.created_at,
-            status_compliance: h.status_compliance,
-            resumo_analise: h.resumo_analise || "",
-          }));
-        }
       } else {
-        const histRows = (r.history && Array.isArray(r.history)) ? r.history.map((h) => ({
-          created_at: h.created_at,
-          status_compliance: h.status_compliance,
-          resumo_analise: h.resumo_analise || "",
-        })) : undefined;
-        if (histRows) periodicHistoryCache[key] = histRows;
         periodicAnalysisGroups.push({ key, sorted: [r] });
       }
     });
@@ -384,7 +361,7 @@
   function ensurePeriodicLoaded() {
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0&with_history=1`)
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
         buildPeriodicInMemory(rows);
