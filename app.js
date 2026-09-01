@@ -35,13 +35,14 @@
   let periodicSentinelObserver = null;
   let periodicChunkBusy = false;
   let periodicChunkQueued = false;
+  const periodicHistoryCache = {}; // key -> [history rows]
   let periodicPrefetchBusy = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
   const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.24";
+  const APP_VERSION = "1.4.25";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1394,12 +1395,13 @@
       const periodicKey = modalEl?.dataset?.periodicKey;
 
       if (periodicKey) {
-        if (complianceHistoryProvider?.periodicKey === periodicKey && complianceHistoryProvider?.rows?.length) {
-          renderComplianceHistoryRows(complianceHistoryProvider.rows);
+        if (periodicHistoryCache[periodicKey]?.length) {
+          complianceHistoryProvider = { periodicKey, rows: periodicHistoryCache[periodicKey] };
+          renderComplianceHistoryRows(periodicHistoryCache[periodicKey]);
         } else {
           const tbody = $("#complianceHistoryBody");
           const emptyEl = $("#complianceHistoryEmpty");
-          if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span> Carregando histórico...</td></tr>`;
+          if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span></td></tr>`;
           if (emptyEl) emptyEl.style.display = "none";
           const [dominio, idPost] = periodicKey.split("::");
           try {
@@ -1410,11 +1412,11 @@
               resumo_analise: h.resumo_analise,
             }));
             if (modalEl?.dataset?.periodicKey !== periodicKey) return;
+            periodicHistoryCache[periodicKey] = historyRows;
             complianceHistoryProvider = { periodicKey, rows: historyRows };
             renderComplianceHistoryRows(historyRows);
-          } catch (e) {
-            console.error("Falha ao carregar histórico periódico:", e);
-            if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem; color:var(--accent-danger);">Erro ao carregar histórico</td></tr>`;
+          } catch {
+            if (tbody) tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem; color:var(--accent-danger);">Erro</td></tr>`;
           }
         }
       } else if (complianceHistoryProvider?.rows?.length) {
@@ -1485,11 +1487,6 @@
 
     // Renderização INSTANTÂNEA com dados em memória (group.sorted)
     const latest = sorted[0] || null;
-    const historyRows = sorted.slice(1).map((h) => ({
-      created_at: h.created_at,
-      status_compliance: h.status_compliance,
-      resumo_analise: h.resumo_analise,
-    }));
 
     const resumoEl = $("#complianceResumo");
     if (resumoEl) {
@@ -1504,7 +1501,14 @@
       btn.style.display = hasData ? "" : "none";
     }
     const histContainer = $("#complianceHistoryContainer");
-    if (histContainer) histContainer.style.display = "none";
+    if (histContainer) {
+      histContainer.style.display = "none";
+      // Pré-renderiza com spinner enquanto busca
+      const histBody = $("#complianceHistoryBody");
+      const emptyEl = $("#complianceHistoryEmpty");
+      if (histBody) histBody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span></td></tr>`;
+      if (emptyEl) emptyEl.style.display = "none";
+    }
     const histBtn = $("#btnToggleComplianceHistory");
     if (histBtn) histBtn.textContent = "📜 Ver Histórico";
 
@@ -1513,32 +1517,49 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    // Provider com dados em memória (instantâneo)
-    complianceHistoryProvider = { periodicKey: key, rows: historyRows };
-
-    // Refresh em background para pegar rows mais novos (não bloqueia UI)
-    apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
-      .then((rows) => {
-        if (!rows?.length) return;
-        if (modal.dataset.periodicKey !== key) return;
-        rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        const newHistoryRows = rows.slice(1).map((h) => ({
-          created_at: h.created_at,
-          status_compliance: h.status_compliance,
-          resumo_analise: h.resumo_analise,
-        }));
-        complianceHistoryProvider = { periodicKey: key, rows: newHistoryRows };
-
-        // Atualiza cache em memória
-        if (!periodicAnalysisGroups.find((g) => g.key === key)) {
-          periodicAnalysisGroups.push({ key, sorted: rows });
-        } else {
-          const g = periodicAnalysisGroups.find((g) => g.key === key);
-          rows.forEach((r) => { if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r); });
-          g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        }
-      })
-      .catch(() => {});
+    // Se já temos cache, usa direto (instantâneo). Senão busca em background.
+    if (periodicHistoryCache[key]) {
+      complianceHistoryProvider = { periodicKey: key, rows: periodicHistoryCache[key] };
+      // Atualiza o body do histórico com o cache (caso já esteja visível)
+      if (histContainer && histContainer.style.display !== "none") {
+        renderComplianceHistoryRows(periodicHistoryCache[key]);
+      }
+    } else {
+      // Busca histórico em background
+      apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
+        .then((rows) => {
+          if (!rows?.length) return;
+          if (modal.dataset.periodicKey !== key) return;
+          rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          const latestRow = rows[0];
+          const historyRows = rows.slice(1).map((h) => ({
+            created_at: h.created_at,
+            status_compliance: h.status_compliance,
+            resumo_analise: h.resumo_analise,
+          }));
+          // Cache para próximas aberturas
+          periodicHistoryCache[key] = historyRows;
+          if (resumoEl && latestRow.resumo_analise) {
+            resumoEl.innerHTML = renderComplianceResumo(latestRow.resumo_analise);
+          }
+          if (btn) {
+            const hasData = !!latestRow.status_compliance || (latestRow.resumo_analise?.trim());
+            btn.style.display = hasData ? "" : "none";
+          }
+          complianceHistoryProvider = { periodicKey: key, rows: historyRows };
+          if (histContainer && histContainer.style.display !== "none") {
+            renderComplianceHistoryRows(historyRows);
+          }
+          if (!periodicAnalysisGroups.find((g) => g.key === key)) {
+            periodicAnalysisGroups.push({ key, sorted: rows });
+          } else {
+            const g = periodicAnalysisGroups.find((g) => g.key === key);
+            rows.forEach((r) => { if (!g.sorted.find((x) => x.id === r.id)) g.sorted.push(r); });
+            g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          }
+        })
+        .catch(() => {});
+    }
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
