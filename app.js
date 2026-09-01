@@ -35,15 +35,14 @@
   let periodicSentinelObserver = null;
   let periodicChunkBusy = false;
   let periodicChunkQueued = false;
-  const periodicHistoryCache = {};     // key -> [history rows] ou null se vazio
-  const periodicHistoryFetching = {};   // key -> true se fetch em andamento
+  const periodicHistoryCache = {};     // key -> [history rows]
   let periodicPrefetchBusy = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
   const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.26";
+  const APP_VERSION = "1.4.27";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -280,20 +279,15 @@
         buildPeriodicInMemory(rows);
         periodicPrefetchOffset = rows.length;
         if (rows.length === 0) periodicPrefetchOffset = -1;
-        // Dispara prefetch do histórico de cada grupo (fire-and-forget)
-        rows.forEach((r) => prefetchPeriodicHistory(r.dominio, r.id_post));
       })
       .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
   }
 
-  // Busca histórico de um grupo em background e armazena no cache.
-  // Se já estiver no cache ou em andamento, não rebusca.
+  // Busca histórico de um grupo em background. Se já estiver no cache, não rebusca.
   function prefetchPeriodicHistory(dominio, idPost) {
     const key = `${dominio}::${idPost ?? ""}`;
-    if (periodicHistoryCache[key] !== undefined) return; // já tem cache (ou [])
-    if (periodicHistoryFetching[key]) return;
-    periodicHistoryFetching[key] = true;
+    if (periodicHistoryCache[key] !== undefined) return;
     apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
       .then((rows) => {
         if (!rows?.length) { periodicHistoryCache[key] = []; return; }
@@ -303,9 +297,17 @@
           status_compliance: h.status_compliance,
           resumo_analise: h.resumo_analise,
         }));
+        const modal = document.getElementById("modalCompliance");
+        if (modal?.dataset?.periodicKey === key) {
+          const histBody = document.getElementById("complianceHistoryBody");
+          const emptyEl = document.getElementById("complianceHistoryEmpty");
+          complianceHistoryProvider = { periodicKey: key, rows: periodicHistoryCache[key] };
+          if (histBody) histBody.innerHTML = "";
+          renderComplianceHistoryRows(periodicHistoryCache[key]);
+          if (emptyEl) emptyEl.style.display = periodicHistoryCache[key]?.length ? "none" : "";
+        }
       })
-      .catch(() => { periodicHistoryCache[key] = []; })
-      .finally(() => { delete periodicHistoryFetching[key]; });
+      .catch(() => { periodicHistoryCache[key] = []; });
   }
 
   async function prefetchNextPage() {
@@ -1514,38 +1516,15 @@
     if (histBody) histBody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span></td></tr>`;
     if (emptyEl) emptyEl.style.display = "none";
 
-    // Se tem cache, atualiza resumo e provider imediatamente
+    // Se tem cache, atualiza imediatamente
     if (periodicHistoryCache[key] !== undefined) {
       complianceHistoryProvider = { periodicKey: key, rows: periodicHistoryCache[key] };
       if (histBody) histBody.innerHTML = "";
       renderComplianceHistoryRows(periodicHistoryCache[key]);
       if (emptyEl) emptyEl.style.display = periodicHistoryCache[key]?.length ? "none" : "";
-    }
-
-    // Inicia fetch se necessário (ou continua se já em andamento)
-    if (periodicHistoryCache[key] === undefined && !periodicHistoryFetching[key]) {
-      periodicHistoryFetching[key] = true;
-      apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
-        .then((rows) => {
-          if (!rows?.length) { periodicHistoryCache[key] = []; return; }
-          rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-          const latestRow = rows[0];
-          const historyRows = rows.slice(1).map((h) => ({
-            created_at: h.created_at,
-            status_compliance: h.status_compliance,
-            resumo_analise: h.resumo_analise,
-          }));
-          periodicHistoryCache[key] = historyRows;
-          if (resumoEl && latestRow.resumo_analise) resumoEl.innerHTML = renderComplianceResumo(latestRow.resumo_analise);
-          if (btn) btn.style.display = (!!latestRow.status_compliance || latestRow.resumo_analise?.trim()) ? "" : "none";
-          if (modal.dataset.periodicKey !== key) return;
-          complianceHistoryProvider = { periodicKey: key, rows: historyRows };
-          if (histBody) histBody.innerHTML = "";
-          renderComplianceHistoryRows(historyRows);
-          if (emptyEl) emptyEl.style.display = historyRows.length ? "none" : "";
-        })
-        .catch(() => { periodicHistoryCache[key] = []; })
-        .finally(() => { delete periodicHistoryFetching[key]; });
+    } else {
+      // Inicia fetch (já entra na fila com controle de concorrência)
+      prefetchPeriodicHistory(dominio, idPost);
     }
   }
 

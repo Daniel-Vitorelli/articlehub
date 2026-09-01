@@ -26,15 +26,23 @@ if ($method === 'GET') {
     if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
         $dominioH = trim($_GET['dominio']);
         $idPostH = trim($_GET['id_post']);
-        $stmt = $db->prepare(
-            'SELECT pa.*, d.url AS dominio_url
-             FROM periodic_analysis pa
-             LEFT JOIN domains d ON d.blog_name = pa.dominio
-             WHERE pa.dominio = ? AND pa.id_post = ?
-             ORDER BY pa.created_at DESC, pa.id DESC'
-        );
+        $historyLimit = isset($_GET['history_limit']) ? max(1, min(50, (int)$_GET['history_limit'])) : 10;
+        $historyOffset = isset($_GET['history_offset']) ? max(0, (int)$_GET['history_offset']) : 0;
+        // Total
+        $stmt = $db->prepare('SELECT COUNT(*) FROM periodic_analysis WHERE dominio = ? AND id_post = ?');
         $stmt->execute([$dominioH, $idPostH]);
-        jsonResponse(200, $stmt->fetchAll());
+        $total = (int)$stmt->fetchColumn();
+        // Retorna só os campos leves: id, created_at, status_compliance
+        // (resumo_analise já está na listagem paginada / prefetch)
+        $stmt = $db->prepare(
+            'SELECT pa.id, pa.created_at, pa.status_compliance, pa.dominio, pa.id_post
+             FROM periodic_analysis pa
+             WHERE pa.dominio = ? AND pa.id_post = ?
+             ORDER BY pa.created_at DESC, pa.id DESC
+             LIMIT ? OFFSET ?'
+        );
+        $stmt->execute([$dominioH, $idPostH, $historyLimit, $historyOffset]);
+        jsonResponse(200, ['data' => $stmt->fetchAll(), 'total' => $total]);
     }
 
     // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx
