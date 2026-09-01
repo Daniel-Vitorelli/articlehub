@@ -37,11 +37,11 @@
   let periodicChunkQueued = false;
   let periodicPrefetchBusy = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
-  const PERIODIC_BACKEND_PAGE = 50;     // grupos buscados por request do backend (mantém alinhado com a UI)
+  const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.20";
+  const APP_VERSION = "1.4.21";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1483,26 +1483,34 @@
   }
 
   async function openComplianceModalForPeriodic(key) {
-    console.log("[Periodic] Abrindo modal para key:", key);
     const [dominio, idPost] = key.split("::");
     const group = periodicAnalysisGroups.find((g) => g.key === key);
     const latest = group ? group.sorted[0] : null;
 
     const modal = $("#modalCompliance");
-    if (!modal) { console.error("[Periodic] Modal não encontrado"); return; }
+    if (!modal) return;
+
+    // Prepara o DOM do modal ANTES de abrir
+    const resumoEl = $("#complianceResumo");
+    if (resumoEl) resumoEl.innerHTML = renderComplianceResumo(latest ? (latest.resumo_analise || "—") : "Carregando...");
+    const btn = $("#btnResetCompliance");
+    if (btn) btn.style.display = latest ? "" : "none";
+    const histContainer = $("#complianceHistoryContainer");
+    if (histContainer) histContainer.style.display = "none";
+    const histBtn = $("#btnToggleComplianceHistory");
+    if (histBtn) histBtn.textContent = "📜 Ver Histórico";
+
+    // Seta flags ANTES de abrir
     modal.dataset.periodicKey = key;
     modal.dataset.requestId = "";
+    modal.classList.add("active");
+    document.body.style.overflow = "hidden";
 
-    await openComplianceModal(null, {
-      resumo: latest ? latest.resumo_analise : "Carregando histórico...",
-      status: latest ? latest.status_compliance : "",
-      showReset: !!latest,
-    });
-
+    // Busca histórico em background
     try {
       const rows = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`);
-      if (!rows?.length) { console.log("[Periodic] Histórico vazio para", key); return; }
-      if (modal.dataset.periodicKey !== key) { console.log("[Periodic] Modal já mudou, ignorando"); return; }
+      if (!rows?.length) return;
+      if (modal.dataset.periodicKey !== key) return;
 
       rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       const latestRow = rows[0];
@@ -1512,10 +1520,8 @@
         resumo_analise: h.resumo_analise,
       }));
 
-      const el = $("#complianceResumo");
-      if (el) el.innerHTML = renderComplianceResumo(latestRow.resumo_analise || "—");
-      const btn = $("#btnResetCompliance");
-      if (btn) btn.style.display = !!latestRow.status_compliance || (latestRow.resumo_analise?.trim()) ? "" : "none";
+      if (resumoEl) resumoEl.innerHTML = renderComplianceResumo(latestRow.resumo_analise || "—");
+      if (btn) btn.style.display = (!!latestRow.status_compliance || (latestRow.resumo_analise?.trim())) ? "" : "none";
       complianceHistoryProvider = { periodicKey: key, rows: historyRows };
 
       if (!periodicAnalysisGroups.find((g) => g.key === key)) {
@@ -1526,7 +1532,7 @@
         g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       }
     } catch (e) {
-      console.error("[Periodic] Falha ao carregar histórico:", e);
+      console.error("Falha ao carregar histórico periódico:", e);
     }
   }
 
@@ -3648,41 +3654,33 @@
     }
   }
 
-  // Observer único e persistente. Usa "geração" para evitar disparo imediato
-  // quando o sentinel é reinserido JÁ DENTRO da viewport (após um render).
-  let sentinelObserverGen = 0; // incrementa a cada setup, ignora o 1º disparo de cada gen
-  let sentinelObservedGen = -1; // última geração que já disparou
-
+  // Scroll listener simples que detecta quando o sentinel entra no viewport.
+  // Não usa IntersectionObserver (que tem bugs com re-renders no mesmo sentinel).
   function setupSentinelObserver() {
-    const sentinel = document.getElementById("periodicScrollSentinel");
-    if (!sentinel) return;
-
-    if (periodicSentinelObserver) {
-      periodicSentinelObserver.disconnect();
-    }
-    sentinelObserverGen++;
-    const myGen = sentinelObserverGen;
-    periodicSentinelObserver = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) {
-          if (myGen === sentinelObservedGen) return; // já disparou para esta geração
-          sentinelObservedGen = myGen;
-          renderPeriodicChunk();
-        }
-      },
-      { rootMargin: PERIODIC_SENTINEL_MARGIN, threshold: 0 },
-    );
-    periodicSentinelObserver.observe(sentinel);
+    if (periodicSentinelObserver) return; // já ativo
+    const onScroll = () => {
+      const sentinel = document.getElementById("periodicScrollSentinel");
+      if (!sentinel) return;
+      const rect = sentinel.getBoundingClientRect();
+      if (rect.top < window.innerHeight + 500) {
+        renderPeriodicChunk();
+      }
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    periodicSentinelObserver = { cleanup: () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    }};
+    requestAnimationFrame(onScroll);
   }
 
   function teardownSentinelObserver() {
-    if (periodicSentinelObserver) {
-      periodicSentinelObserver.disconnect();
-      periodicSentinelObserver = null;
+    if (periodicSentinelObserver && periodicSentinelObserver.cleanup) {
+      periodicSentinelObserver.cleanup();
     }
+    periodicSentinelObserver = null;
     removeSentinel();
-    sentinelObserverGen++;
-    sentinelObservedGen = -1;
   }
 
   async function renderComplianceAnalysis(opts = {}) {
