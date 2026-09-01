@@ -91,39 +91,25 @@ if ($method === 'GET') {
         $rows = $stmt->fetchAll();
 
         if ($withHistory && $rows) {
-            // Para cada row retornada, busca o histórico leve (id, created_at, status_compliance)
-            // limitado a 10 mais recentes usando o índice idx_periodic_group_lookup
-            $pairs = [];
-            $args = [];
-            foreach ($rows as $r) {
-                $pairs[] = '(pa.dominio = ? AND pa.id_post = ?)';
-                $args[] = $r->dominio;
-                $args[] = $r->id_post;
-            }
-            $pairsSql = implode(' OR ', $pairs);
-            // Seleciona top 10 por grupo usando variável de sessão MySQL
-            $histSql = "SELECT pa.dominio, pa.id_post, pa.id, pa.created_at, pa.status_compliance
-                        FROM (
-                            SELECT pa.*,
-                                   @row_num := IF(@prev_grp = CONCAT(pa.dominio,'::',pa.id_post),
-                                                  @row_num + 1, 1) AS rn,
-                                   @prev_grp := CONCAT(pa.dominio,'::',pa.id_post)
-                            FROM periodic_analysis pa
-                            WHERE $pairsSql
-                            ORDER BY pa.dominio, pa.id_post, pa.created_at DESC, pa.id DESC
-                        ) pa
-                        WHERE pa.rn <= 10";
-            $stmtH = $db->prepare($histSql);
+            $dominios = array_map(fn($r) => $r->dominio ?: '', $rows);
+            $ids = array_map(fn($r) => $r->id_post, $rows);
+            $domList = implode(',', array_fill(0, count($dominios), '?'));
+            $idList = implode(',', array_fill(0, count($ids), '?'));
+            $args = array_merge($dominios, $ids);
+            $stmtH = $db->prepare("SELECT id, dominio, id_post, created_at, status_compliance
+                                   FROM periodic_analysis
+                                   WHERE COALESCE(dominio,'') IN ($domList) AND id_post IN ($idList)
+                                   ORDER BY COALESCE(dominio,''), id_post, created_at DESC, id DESC");
             $stmtH->execute($args);
             $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
             $byKey = [];
             foreach ($histRows as $h) {
-                $k = $h['dominio'] . '::' . $h['id_post'];
+                $k = ($h['dominio'] ?: '') . '::' . $h['id_post'];
                 if (!isset($byKey[$k])) $byKey[$k] = [];
-                $byKey[$k][] = $h;
+                if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
             }
             foreach ($rows as $r) {
-                $k = $r->dominio . '::' . $r->id_post;
+                $k = ($r->dominio ?: '') . '::' . $r->id_post;
                 $r->history = $byKey[$k] ?? [];
             }
         }

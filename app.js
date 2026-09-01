@@ -42,7 +42,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.28";
+  const APP_VERSION = "1.4.29";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -345,16 +345,18 @@
       if (existing) {
         existing.sorted.unshift(r);
         existing.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        if (r.history && Array.isArray(r.history)) {
+          r.history.forEach((h) => { if (!existing.history.find((x) => x.id === h.id)) existing.history.push(h); });
+          existing.history.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        }
       } else {
-        periodicAnalysisGroups.push({ key, sorted: [r] });
-        // Dispara prefetch do histórico deste novo grupo
-        prefetchPeriodicHistory(r.dominio, r.id_post);
+        const history = (r.history && Array.isArray(r.history)) ? [...r.history] : [];
+        periodicAnalysisGroups.push({ key, sorted: [r], history });
       }
     });
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
     periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
-    // Atualiza também a lista visível respeitando filtros atuais
     const statusFilter = $("#filterPeriodicStatus")?.value || "";
     const typeFilter = $("#filterPeriodicType")?.value || "";
     const domainFilter = $("#filterPeriodicDomain")?.value || "";
@@ -370,7 +372,7 @@
   function ensurePeriodicLoaded() {
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0&with_history=1`)
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
         buildPeriodicInMemory(rows);
