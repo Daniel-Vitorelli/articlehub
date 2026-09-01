@@ -63,7 +63,7 @@ if ($method === 'GET') {
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
         // Subquery para latest por grupo (usa índice idx_periodic_group_latest)
-        $latestSub = '(SELECT dominio, id_post, MAX(id) AS max_id FROM periodic_analysis GROUP BY dominio, id_post) AS latest';
+        $latestSub = '(SELECT MAX(id) AS max_id, dominio, id_post FROM periodic_analysis GROUP BY dominio, id_post) AS latest';
 
         // Total agrupado: só calcula quando offset=0 (troca de filtro), não em cada scroll.
         $total = null;
@@ -91,26 +91,31 @@ if ($method === 'GET') {
         $rows = $stmt->fetchAll();
 
         if ($withHistory && $rows) {
-            $dominios = array_map(fn($r) => $r->dominio ?: '', $rows);
-            $ids = array_map(fn($r) => $r->id_post, $rows);
-            $domList = implode(',', array_fill(0, count($dominios), '?'));
-            $idList = implode(',', array_fill(0, count($ids), '?'));
-            $args = array_merge($dominios, $ids);
-            $stmtH = $db->prepare("SELECT id, dominio, id_post, created_at, status_compliance
-                                   FROM periodic_analysis
-                                   WHERE COALESCE(dominio,'') IN ($domList) AND id_post IN ($idList)
-                                   ORDER BY COALESCE(dominio,''), id_post, created_at DESC, id DESC");
-            $stmtH->execute($args);
-            $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
-            $byKey = [];
-            foreach ($histRows as $h) {
-                $k = ($h['dominio'] ?: '') . '::' . $h['id_post'];
-                if (!isset($byKey[$k])) $byKey[$k] = [];
-                if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
-            }
-            foreach ($rows as $r) {
-                $k = ($r->dominio ?: '') . '::' . $r->id_post;
-                $r->history = $byKey[$k] ?? [];
+            try {
+                $dominios = array_map(fn($r) => $r->dominio ?: '', $rows);
+                $ids = array_map(fn($r) => $r->id_post, $rows);
+                $domList = implode(',', array_fill(0, count($dominios), '?'));
+                $idList = implode(',', array_fill(0, count($ids), '?'));
+                $args = array_merge($dominios, $ids);
+                $stmtH = $db->prepare("SELECT id, dominio, id_post, created_at, status_compliance
+                                       FROM periodic_analysis
+                                       WHERE COALESCE(dominio,'') IN ($domList) AND id_post IN ($idList)
+                                       ORDER BY COALESCE(dominio,''), id_post, created_at DESC, id DESC");
+                $stmtH->execute($args);
+                $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
+                $byKey = [];
+                foreach ($histRows as $h) {
+                    $k = ($h['dominio'] ?: '') . '::' . $h['id_post'];
+                    if (!isset($byKey[$k])) $byKey[$k] = [];
+                    if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
+                }
+                foreach ($rows as $r) {
+                    $k = ($r->dominio ?: '') . '::' . $r->id_post;
+                    $r->history = $byKey[$k] ?? [];
+                }
+            } catch (Exception $e) {
+                error_log('[periodic_analysis] withHistory error: ' . $e->getMessage());
+                foreach ($rows as $r) { $r->history = []; }
             }
         }
 
