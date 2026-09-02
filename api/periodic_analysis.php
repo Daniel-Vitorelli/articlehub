@@ -82,6 +82,30 @@ if ($method === 'GET') {
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
+        if ($withHistory && $rows) {
+            $dominios = array_map(fn($r) => $r->dominio, $rows);
+            $ids = array_map(fn($r) => $r->id_post, $rows);
+            $placeholders = implode(',', array_fill(0, count($rows), '(?, ?)'));
+            $args = [];
+            foreach ($rows as $r) { $args[] = $r->dominio; $args[] = $r->id_post; }
+            $stmtH = $db->prepare("SELECT dominio, id_post, id, created_at, status_compliance
+                                   FROM periodic_analysis
+                                   WHERE (dominio, id_post) IN (VALUES $placeholders)
+                                   ORDER BY dominio, id_post, created_at DESC, id DESC");
+            $stmtH->execute($args);
+            $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
+            $byKey = [];
+            foreach ($histRows as $h) {
+                $k = $h['dominio'] . '::' . $h['id_post'];
+                if (!isset($byKey[$k])) $byKey[$k] = [];
+                if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
+            }
+            foreach ($rows as $r) {
+                $k = $r->dominio . '::' . $r->id_post;
+                $r->history = $byKey[$k] ?? [];
+            }
+        }
+
         jsonResponse(200, ['data' => $rows, 'total' => $total]);
     }
 
