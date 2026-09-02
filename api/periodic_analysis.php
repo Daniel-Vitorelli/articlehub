@@ -22,20 +22,6 @@ if ($method === 'GET') {
             jsonResponse(200, $stmt->fetchAll(PDO::FETCH_COLUMN));
         }
     }
-    // Histórico de um grupo específico (lazy para modal) - ?history=1&dominio=xxx&id_post=123
-    if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
-        $dominioH = trim($_GET['dominio']);
-        $idPostH = trim($_GET['id_post']);
-        $stmt = $db->prepare(
-            'SELECT id, created_at, status_compliance
-             FROM periodic_analysis
-             WHERE dominio = ? AND id_post = ?
-             ORDER BY created_at DESC, id DESC
-             LIMIT 50'
-        );
-        $stmt->execute([$dominioH ?: null, $idPostH]);
-        jsonResponse(200, $stmt->fetchAll());
-    }
 
     // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
@@ -83,14 +69,19 @@ if ($method === 'GET') {
         $rows = $stmt->fetchAll();
 
         if ($withHistory && $rows) {
-            $dominios = array_map(fn($r) => $r->dominio, $rows);
-            $ids = array_map(fn($r) => $r->id_post, $rows);
-            $placeholders = implode(',', array_fill(0, count($rows), '(?, ?)'));
+            // Busca histórico leve de todos os grupos da página numa query só
+            // Constrói WHERE com OR para cada par (dominio, id_post) - compatível MySQL 5.7+
+            $whereParts = [];
             $args = [];
-            foreach ($rows as $r) { $args[] = $r->dominio; $args[] = $r->id_post; }
+            foreach ($rows as $r) {
+                $whereParts[] = '(dominio = ? AND id_post = ?)';
+                $args[] = $r->dominio;
+                $args[] = $r->id_post;
+            }
+            $whereSql = implode(' OR ', $whereParts);
             $stmtH = $db->prepare("SELECT dominio, id_post, id, created_at, status_compliance
                                    FROM periodic_analysis
-                                   WHERE (dominio, id_post) IN (VALUES $placeholders)
+                                   WHERE $whereSql
                                    ORDER BY dominio, id_post, created_at DESC, id DESC");
             $stmtH->execute($args);
             $histRows = $stmtH->fetchAll(PDO::FETCH_ASSOC);
@@ -109,19 +100,18 @@ if ($method === 'GET') {
         jsonResponse(200, ['data' => $rows, 'total' => $total]);
     }
 
-    // Fallback sem paginação (compatível com frontend antigo)
-    // ?history=1&dominio=X&id_post=Y → retorna histórico completo de um grupo
+    // Histórico de um grupo específico (lazy para modal) - ?history=1&dominio=xxx&id_post=123
     if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
-        $dominio = trim($_GET['dominio']);
-        $idPost = $_GET['id_post'];
+        $dominioH = trim($_GET['dominio']);
+        $idPostH = trim($_GET['id_post']);
         $stmt = $db->prepare(
-            'SELECT pa.*, d.url AS dominio_url
-             FROM periodic_analysis pa
-             LEFT JOIN domains d ON d.blog_name = pa.dominio
-             WHERE pa.dominio = ? AND pa.id_post = ?
-             ORDER BY pa.created_at DESC, pa.id DESC'
+            'SELECT id, created_at, status_compliance, resumo_analise
+             FROM periodic_analysis
+             WHERE dominio = ? AND id_post = ?
+             ORDER BY created_at DESC, id DESC
+             LIMIT 50'
         );
-        $stmt->execute([$dominio, $idPost]);
+        $stmt->execute([$dominioH ?: null, $idPostH]);
         jsonResponse(200, $stmt->fetchAll());
     }
 
