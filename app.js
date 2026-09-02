@@ -37,12 +37,17 @@
   let periodicChunkQueued = false;
   const periodicHistoryCache = {};     // key -> [history rows]
   let periodicPrefetchBusy = false;
+  // Smart history preloader
+  let historyPreloadQueue = [];
+  let historyPreloadRunning = 0;
+  const HISTORY_PRELOAD_CONCURRENCY = 3;
+  let historyPreloadTriggered = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
   const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.34";
+  const APP_VERSION = "1.4.35";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -307,6 +312,59 @@
         }
       })
       .catch(() => { periodicHistoryCache[key] = []; });
+  }
+
+  // Smart history preloader: queue with concurrency control
+  function enqueueHistoryPreload(key, dominio, idPost) {
+    if (periodicHistoryCache[key] !== undefined) return; // já carregado ou em progresso
+    if (historyPreloadQueue.some((item) => item.key === key)) return; // já na fila
+    historyPreloadQueue.push({ key, dominio, idPost });
+    processHistoryPreloadQueue();
+  }
+
+  async function processHistoryPreloadQueue() {
+    while (historyPreloadQueue.length > 0 && historyPreloadRunning < HISTORY_PRELOAD_CONCURRENCY) {
+      const item = historyPreloadQueue.shift();
+      historyPreloadRunning++;
+      try {
+        const raw = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(item.dominio)}&id_post=${encodeURIComponent(item.idPost)}`);
+        const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+        if (!rows?.length) { periodicHistoryCache[item.key] = []; return; }
+        rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        periodicHistoryCache[item.key] = rows.slice(1).map((h) => ({
+          created_at: h.created_at,
+          status_compliance: h.status_compliance,
+          resumo_analise: h.resumo_analise,
+        }));
+        // Se modal aberto para este grupo, atualiza
+        const modal = document.getElementById("modalCompliance");
+        if (modal?.dataset?.periodicKey === item.key) {
+          const histBody = document.getElementById("complianceHistoryBody");
+          const emptyEl = document.getElementById("complianceHistoryEmpty");
+          complianceHistoryProvider = { periodicKey: item.key, rows: periodicHistoryCache[item.key] };
+          if (histBody) histBody.innerHTML = "";
+          renderComplianceHistoryRows(periodicHistoryCache[item.key]);
+          if (emptyEl) emptyEl.style.display = periodicHistoryCache[item.key]?.length ? "none" : "";
+        }
+      } catch {
+        periodicHistoryCache[item.key] = [];
+      } finally {
+        historyPreloadRunning--;
+        processHistoryPreloadQueue();
+      }
+    }
+  }
+
+  // Preload history for visible items (call after render)
+  function preloadHistoryForVisibleItems(startIdx, count) {
+    const endIdx = Math.min(startIdx + count, periodicAnalysisVisible.length);
+    for (let i = startIdx; i < endIdx; i++) {
+      const row = periodicAnalysisVisible[i];
+      if (row) {
+        const key = `${row.dominio}::${row.id_post ?? ""}`;
+        enqueueHistoryPreload(key, row.dominio, row.id_post);
+      }
+    }
   }
 
   // Insere rows adicionais nos groups existentes (sem re-renderizar).
@@ -3596,13 +3654,17 @@
       const hasLocal = periodicAnalysisLoaded < periodicAnalysisVisible.length;
 
       if (hasLocal) {
-        const chunk = periodicAnalysisVisible.slice(periodicAnalysisLoaded, periodicAnalysisLoaded + PERIODIC_PAGE_SIZE);
+        const chunkStart = periodicAnalysisLoaded;
+        const chunk = periodicAnalysisVisible.slice(chunkStart, chunkStart + PERIODIC_PAGE_SIZE);
         const holder = document.createElement("tbody");
         holder.innerHTML = chunk.map(periodicRowHtml).join("");
         while (holder.firstChild) tbody.appendChild(holder.firstChild);
         periodicAnalysisLoaded += chunk.length;
         updatePeriodicInfo();
         updateBulkUI();
+
+        // Preload history for newly rendered items (smart background loading)
+        preloadHistoryForVisibleItems(chunkStart, chunk.length);
 
         if (periodicPrefetchOffset !== -1 && !periodicPrefetchBusy) prefetchNextPage();
 
