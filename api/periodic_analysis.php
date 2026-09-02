@@ -100,6 +100,36 @@ if ($method === 'GET') {
         jsonResponse(200, ['data' => $rows, 'total' => $total]);
     }
 
+    // Histórico em lote para múltiplos grupos - ?history_batch=1&groups=[{"dominio":"x","id_post":1},...]
+    if (isset($_GET['history_batch']) && isset($_GET['groups'])) {
+        $groups = json_decode($_GET['groups'], true);
+        if (is_array($groups) && count($groups) > 0) {
+            $whereParts = [];
+            $args = [];
+            foreach ($groups as $g) {
+                $whereParts[] = '(dominio = ? AND id_post = ?)';
+                $args[] = $g['dominio'] ?? '';
+                $args[] = $g['id_post'] ?? '';
+            }
+            $whereSql = implode(' OR ', $whereParts);
+            $stmt = $db->prepare("SELECT dominio, id_post, id, created_at, status_compliance, resumo_analise
+                                   FROM periodic_analysis
+                                   WHERE $whereSql
+                                   ORDER BY dominio, id_post, created_at DESC, id DESC");
+            $stmt->execute($args);
+            $histRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            $byKey = [];
+            foreach ($histRows as $h) {
+                $k = $h['dominio'] . '::' . $h['id_post'];
+                if (!isset($byKey[$k])) $byKey[$k] = [];
+                if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
+            }
+            jsonResponse(200, $byKey);
+        } else {
+            jsonResponse(200, new stdClass());
+        }
+    }
+
     // Histórico de um grupo específico (lazy para modal) - ?history=1&dominio=xxx&id_post=123
     if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
         $dominioH = trim($_GET['dominio']);

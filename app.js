@@ -37,17 +37,17 @@
   let periodicChunkQueued = false;
   const periodicHistoryCache = {};     // key -> [history rows]
   let periodicPrefetchBusy = false;
-  // Smart history preloader
+  // Smart history preloader config
   let historyPreloadQueue = [];
   let historyPreloadRunning = 0;
-  const HISTORY_PRELOAD_CONCURRENCY = 3;
+  let historyPreloadIdleHandle = null;
   let historyPreloadTriggered = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
   const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.35";
+  const APP_VERSION = "1.4.36";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -314,48 +314,80 @@
       .catch(() => { periodicHistoryCache[key] = []; });
   }
 
-  // Smart history preloader: queue with concurrency control
-  function enqueueHistoryPreload(key, dominio, idPost) {
-    if (periodicHistoryCache[key] !== undefined) return; // já carregado ou em progresso
-    if (historyPreloadQueue.some((item) => item.key === key)) return; // já na fila
-    historyPreloadQueue.push({ key, dominio, idPost });
-    processHistoryPreloadQueue();
+  // Smart history preloader: batch + priority queue + idle callback + hover priority
+  const HISTORY_BATCH_SIZE = 20;           // máx grupos por request batch
+  const HISTORY_PRELOAD_CONCURRENCY = 2;   // requests batch paralelos
+
+  // Adiciona à fila com prioridade (0=normal, 1=hover/alta prioridade)
+  function enqueueHistoryPreload(key, dominio, idPost, priority = 0) {
+    if (periodicHistoryCache[key] !== undefined) return;
+    if (historyPreloadQueue.some((item) => item.key === key)) return;
+    historyPreloadQueue.push({ key, dominio, idPost, priority });
+    // Ordena: prioridade alta primeiro
+    historyPreloadQueue.sort((a, b) => b.priority - a.priority);
+    scheduleHistoryPreload();
+  }
+
+  function scheduleHistoryPreload() {
+    if (historyPreloadIdleHandle) return;
+    if (typeof requestIdleCallback !== 'undefined') {
+      historyPreloadIdleHandle = requestIdleCallback(() => {
+        historyPreloadIdleHandle = null;
+        processHistoryPreloadQueue();
+      }, { timeout: 2000 });
+    } else {
+      // Fallback: setTimeout com delay mínimo
+      historyPreloadIdleHandle = setTimeout(() => {
+        historyPreloadIdleHandle = null;
+        processHistoryPreloadQueue();
+      }, 50);
+    }
   }
 
   async function processHistoryPreloadQueue() {
     while (historyPreloadQueue.length > 0 && historyPreloadRunning < HISTORY_PRELOAD_CONCURRENCY) {
-      const item = historyPreloadQueue.shift();
+      // Pega até HISTORY_BATCH_SIZE itens da fila (prioridade alta primeiro)
+      const batch = historyPreloadQueue.splice(0, HISTORY_BATCH_SIZE);
       historyPreloadRunning++;
+
       try {
-        const raw = await apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(item.dominio)}&id_post=${encodeURIComponent(item.idPost)}`);
-        const rows = Array.isArray(raw) ? raw : (raw?.data || []);
-        if (!rows?.length) { periodicHistoryCache[item.key] = []; return; }
-        rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-        periodicHistoryCache[item.key] = rows.slice(1).map((h) => ({
-          created_at: h.created_at,
-          status_compliance: h.status_compliance,
-          resumo_analise: h.resumo_analise,
-        }));
-        // Se modal aberto para este grupo, atualiza
-        const modal = document.getElementById("modalCompliance");
-        if (modal?.dataset?.periodicKey === item.key) {
-          const histBody = document.getElementById("complianceHistoryBody");
-          const emptyEl = document.getElementById("complianceHistoryEmpty");
-          complianceHistoryProvider = { periodicKey: item.key, rows: periodicHistoryCache[item.key] };
-          if (histBody) histBody.innerHTML = "";
-          renderComplianceHistoryRows(periodicHistoryCache[item.key]);
-          if (emptyEl) emptyEl.style.display = periodicHistoryCache[item.key]?.length ? "none" : "";
-        }
+        // Monta payload para batch API
+        const groups = batch.map(item => ({ dominio: item.dominio, id_post: item.idPost }));
+        const raw = await apiGet(`periodic_analysis.php?history_batch=1&groups=${encodeURIComponent(JSON.stringify(groups))}`);
+        const byKey = raw || {};
+
+        batch.forEach(item => {
+          const rows = byKey[item.key] || [];
+          if (!rows.length) { periodicHistoryCache[item.key] = []; return; }
+          rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          // Slice(1) remove o primeiro que é o latest (já no resumo)
+          periodicHistoryCache[item.key] = rows.slice(1).map((h) => ({
+            created_at: h.created_at,
+            status_compliance: h.status_compliance,
+            resumo_analise: h.resumo_analise,
+          }));
+
+          // Se modal aberto para este grupo, atualiza (stale-while-revalidate)
+          const modal = document.getElementById("modalCompliance");
+          if (modal?.dataset?.periodicKey === item.key) {
+            const histBody = document.getElementById("complianceHistoryBody");
+            const emptyEl = document.getElementById("complianceHistoryEmpty");
+            complianceHistoryProvider = { periodicKey: item.key, rows: periodicHistoryCache[item.key] };
+            if (histBody) histBody.innerHTML = "";
+            renderComplianceHistoryRows(periodicHistoryCache[item.key]);
+            if (emptyEl) emptyEl.style.display = periodicHistoryCache[item.key]?.length ? "none" : "";
+          }
+        });
       } catch {
-        periodicHistoryCache[item.key] = [];
+        batch.forEach(item => { periodicHistoryCache[item.key] = []; });
       } finally {
         historyPreloadRunning--;
-        processHistoryPreloadQueue();
+        if (historyPreloadQueue.length > 0) scheduleHistoryPreload();
       }
     }
   }
 
-  // Preload history for visible items (call after render)
+  // Preload para itens visíveis recém-renderizados
   function preloadHistoryForVisibleItems(startIdx, count) {
     const endIdx = Math.min(startIdx + count, periodicAnalysisVisible.length);
     for (let i = startIdx; i < endIdx; i++) {
@@ -364,6 +396,21 @@
         const key = `${row.dominio}::${row.id_post ?? ""}`;
         enqueueHistoryPreload(key, row.dominio, row.id_post);
       }
+    }
+  }
+
+  // Preload prioritário quando usuário passa mouse sobre a linha
+  function preloadHistoryOnHover(key, dominio, idPost) {
+    enqueueHistoryPreload(key, dominio, idPost, 1); // prioridade alta
+  }
+
+  // Limpa fila de preload (ex: ao trocar filtro)
+  function clearHistoryPreloadQueue() {
+    historyPreloadQueue = [];
+    if (historyPreloadIdleHandle) {
+      if (typeof cancelIdleCallback !== 'undefined') cancelIdleCallback(historyPreloadIdleHandle);
+      else clearTimeout(historyPreloadIdleHandle);
+      historyPreloadIdleHandle = null;
     }
   }
 
@@ -2076,6 +2123,19 @@
       periodicBodyEl.querySelectorAll("tr.is-focused").forEach((row) => row.classList.remove("is-focused"));
       tr.classList.add("is-focused");
     });
+
+    // Hover → preload prioritário do histórico
+    let hoverPreloadTimer = null;
+    periodicBodyEl.addEventListener("mouseenter", (e) => {
+      const tr = e.target.closest("tr[data-periodic-key]");
+      if (!tr || tr.id === "periodicScrollSentinel") return;
+      if (hoverPreloadTimer) clearTimeout(hoverPreloadTimer);
+      hoverPreloadTimer = setTimeout(() => {
+        const key = tr.dataset.periodicKey;
+        const [dominio, idPost] = key.split("::");
+        preloadHistoryOnHover(key, dominio, idPost);
+      }, 150); // debounce 150ms para evitar spam
+    }, true);
   }
   document.addEventListener("click", (e) => {
     const body = $("#periodicAnalysisBody");
@@ -4067,19 +4127,14 @@
     $("#filterLogDate").addEventListener("change", renderLogs);
     $("#filterLogUser").addEventListener("change", renderLogs);
 
-    // Periodic analysis filters
-    $("#filterPeriodicStatus").addEventListener(
-      "change",
-      renderComplianceAnalysis,
-    );
-    $("#filterPeriodicType").addEventListener(
-      "change",
-      renderComplianceAnalysis,
-    );
-    $("#filterPeriodicDomain").addEventListener(
-      "change",
-      renderComplianceAnalysis,
-    );
+    // Periodic analysis filters - limpa fila de preload antes de re-renderizar
+    const handlePeriodicFilterChange = () => {
+      clearHistoryPreloadQueue();
+      renderComplianceAnalysis();
+    };
+    $("#filterPeriodicStatus").addEventListener("change", handlePeriodicFilterChange);
+    $("#filterPeriodicType").addEventListener("change", handlePeriodicFilterChange);
+    $("#filterPeriodicDomain").addEventListener("change", handlePeriodicFilterChange);
 
     let searchTimeout;
     $("#globalSearch").addEventListener("input", () => {
