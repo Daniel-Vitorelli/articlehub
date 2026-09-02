@@ -68,6 +68,8 @@ if ($method === 'GET') {
         $stmt->execute($params);
         $rows = $stmt->fetchAll();
 
+        // COMENTADO: with_history removido - usa history_batch no frontend (mais eficiente)
+        /*
         if ($withHistory && $rows) {
             // Busca histórico leve de todos os grupos da página numa query só
             // Constrói WHERE com OR para cada par (dominio, id_post) - compatível MySQL 5.7+
@@ -96,6 +98,7 @@ if ($method === 'GET') {
                 $r->history = $byKey[$k] ?? [];
             }
         }
+        */
 
         jsonResponse(200, ['data' => $rows, 'total' => $total]);
     }
@@ -112,17 +115,28 @@ if ($method === 'GET') {
                 $args[] = $g['id_post'] ?? '';
             }
             $whereSql = implode(' OR ', $whereParts);
-            $stmt = $db->prepare("SELECT dominio, id_post, id, created_at, status_compliance, resumo_analise
-                                   FROM periodic_analysis
-                                   WHERE $whereSql
-                                   ORDER BY dominio, id_post, created_at DESC, id DESC");
+            
+            // MySQL 8+: ROW_NUMBER() para pegar top 10 por grupo direto no SQL (evita processamento PHP)
+            $stmt = $db->prepare("
+                SELECT dominio, id_post, id, created_at, status_compliance, resumo_analise
+                FROM (
+                    SELECT 
+                        pa.dominio, pa.id_post, pa.id, pa.created_at, pa.status_compliance, pa.resumo_analise,
+                        ROW_NUMBER() OVER (PARTITION BY pa.dominio, pa.id_post ORDER BY pa.created_at DESC, pa.id DESC) as rn
+                    FROM periodic_analysis pa
+                    WHERE $whereSql
+                ) t
+                WHERE t.rn <= 10
+                ORDER BY t.dominio, t.id_post, t.created_at DESC, t.id DESC
+            ");
             $stmt->execute($args);
             $histRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+            
             $byKey = [];
             foreach ($histRows as $h) {
                 $k = $h['dominio'] . '::' . $h['id_post'];
                 if (!isset($byKey[$k])) $byKey[$k] = [];
-                if (count($byKey[$k]) < 10) $byKey[$k][] = $h;
+                $byKey[$k][] = $h;
             }
             jsonResponse(200, $byKey);
         } else {

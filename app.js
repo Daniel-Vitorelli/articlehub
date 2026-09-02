@@ -37,17 +37,17 @@
   let periodicChunkQueued = false;
   const periodicHistoryCache = {};     // key -> [history rows]
   let periodicPrefetchBusy = false;
-  // Smart history preloader config
-  let historyPreloadQueue = [];
-  let historyPreloadRunning = 0;
-  let historyPreloadIdleHandle = null;
-  let historyPreloadTriggered = false;
+  // COMENTADO: Smart history preloader config (substituído por history_batch direto)
+  // let historyPreloadQueue = [];
+  // let historyPreloadRunning = 0;
+  // let historyPreloadIdleHandle = null;
+  // let historyPreloadTriggered = false;
   const PERIODIC_PAGE_SIZE = 50;        // linhas renderizadas por vez na UI
   const PERIODIC_BACKEND_PAGE = 200;    // grupos buscados por request do backend
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.36";
+  const APP_VERSION = "1.4.37";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -283,11 +283,37 @@
         buildPeriodicInMemory(rows);
         periodicPrefetchOffset = rows.length;
         if (rows.length === 0) periodicPrefetchOffset = -1;
+
+        // NOVO: Preload history batch para os primeiros 50 itens visíveis (1 request)
+        if (rows.length > 0) {
+          const first50 = rows.slice(0, 50).map(r => ({
+            dominio: r.dominio,
+            id_post: r.id_post
+          }));
+          if (first50.length) {
+            apiGet(`periodic_analysis.php?history_batch=1&groups=${encodeURIComponent(JSON.stringify(first50))}`)
+              .then(byKey => {
+                if (!byKey) return;
+                Object.entries(byKey).forEach(([key, histRows]) => {
+                  if (!histRows?.length) { periodicHistoryCache[key] = []; return; }
+                  histRows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                  periodicHistoryCache[key] = histRows.slice(1).map(h => ({
+                    created_at: h.created_at,
+                    status_compliance: h.status_compliance,
+                    resumo_analise: h.resumo_analise || "",
+                  }));
+                });
+              })
+              .catch(() => {}); // silencioso
+          }
+        }
       })
       .catch(() => {})
       .finally(() => { periodicLoadedPromise = null; });
   }
 
+  // COMENTADO: Smart history preloader antigo (substituído por history_batch direto no preload/prefetch)
+/*
   // Busca histórico de um grupo em background. Se já estiver no cache, não rebusca.
   function prefetchPeriodicHistory(dominio, idPost) {
     const key = `${dominio}::${idPost ?? ""}`;
@@ -413,6 +439,7 @@
       historyPreloadIdleHandle = null;
     }
   }
+*/
 
   // Insere rows adicionais nos groups existentes (sem re-renderizar).
   // Mantém periodicAnalysisAll e os caches sincronizados.
@@ -1592,32 +1619,17 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    // Histórico já no cache? Renderiza instantâneo
+    // Histórico no cache? Renderiza instantâneo (inclui cache vazio = [])
     const cachedHistory = periodicHistoryCache[key];
-    if (cachedHistory !== undefined && cachedHistory.length > 0) {
+    if (cachedHistory !== undefined) {
       complianceHistoryProvider = { periodicKey: key, rows: cachedHistory };
       if (histBody) histBody.innerHTML = "";
       renderComplianceHistoryRows(cachedHistory);
-      if (emptyEl) emptyEl.style.display = "none";
+      if (emptyEl) emptyEl.style.display = cachedHistory.length ? "none" : "";
       return;
     }
 
-    // Histórico em group.history (do with_history=1 se voltarmos a usar)?
-    const groupHistory = (group?.history || []).map((h) => ({
-      created_at: h.created_at,
-      status_compliance: h.status_compliance,
-      resumo_analise: h.resumo_analise || "",
-    }));
-    if (groupHistory.length > 0) {
-      periodicHistoryCache[key] = groupHistory;
-      complianceHistoryProvider = { periodicKey: key, rows: groupHistory };
-      if (histBody) histBody.innerHTML = "";
-      renderComplianceHistoryRows(groupHistory);
-      if (emptyEl) emptyEl.style.display = "none";
-      return;
-    }
-
-    // Sem cache: mostra spinner e busca da API
+    // Sem cache: spinner + fetch single (fallback raro)
     if (histBody) histBody.innerHTML = `<tr><td colspan="3" style="text-align:center; padding:1rem;"><span class="spinner"></span></td></tr>`;
     if (emptyEl) emptyEl.style.display = "none";
     complianceHistoryProvider = { periodicKey: key, rows: [] };
@@ -1626,8 +1638,6 @@
       .then((raw) => {
         if (modal.dataset.periodicKey !== key) return;
         const data = Array.isArray(raw) ? raw : (raw?.data || []);
-        // O endpoint history=1 retorna TODOS os rows do grupo (incluindo o mais recente).
-        // O primeiro item (index 0) é o latest que já está no resumo. O histórico são os demais.
         const historyOnly = data.slice(1).map((h) => ({
           created_at: h.created_at,
           status_compliance: h.status_compliance,
@@ -2124,7 +2134,7 @@
       tr.classList.add("is-focused");
     });
 
-    // Hover → preload prioritário do histórico
+    // Hover → preload prioritário do histórico (single request, sem queue)
     let hoverPreloadTimer = null;
     periodicBodyEl.addEventListener("mouseenter", (e) => {
       const tr = e.target.closest("tr[data-periodic-key]");
@@ -2132,8 +2142,19 @@
       if (hoverPreloadTimer) clearTimeout(hoverPreloadTimer);
       hoverPreloadTimer = setTimeout(() => {
         const key = tr.dataset.periodicKey;
+        if (periodicHistoryCache[key] !== undefined) return; // já tem cache
         const [dominio, idPost] = key.split("::");
-        preloadHistoryOnHover(key, dominio, idPost);
+        apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
+          .then(rows => {
+            if (!rows?.length) return;
+            rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            periodicHistoryCache[key] = rows.slice(1).map(h => ({
+              created_at: h.created_at,
+              status_compliance: h.status_compliance,
+              resumo_analise: h.resumo_analise || "",
+            }));
+          })
+          .catch(() => {});
       }, 150); // debounce 150ms para evitar spam
     }, true);
   }
@@ -3723,8 +3744,8 @@
         updatePeriodicInfo();
         updateBulkUI();
 
-        // Preload history for newly rendered items (smart background loading)
-        preloadHistoryForVisibleItems(chunkStart, chunk.length);
+        // COMENTADO: preloadHistoryForVisibleItems agora feito via history_batch no prefetchNextPage
+        // preloadHistoryForVisibleItems(chunkStart, chunk.length);
 
         if (periodicPrefetchOffset !== -1 && !periodicPrefetchBusy) prefetchNextPage();
 
@@ -3765,6 +3786,29 @@
       if (!rows.length) { periodicPrefetchOffset = -1; return; }
       appendPeriodicRows(rows);
       periodicPrefetchOffset = offset + rows.length;
+
+      // NOVO: Preload history batch para os itens que vão renderizar (próximos PERIODIC_PAGE_SIZE)
+      const newlyVisibleStart = periodicAnalysisLoaded;
+      const batchItems = periodicAnalysisVisible
+        .slice(newlyVisibleStart, newlyVisibleStart + PERIODIC_PAGE_SIZE)
+        .map(r => ({ dominio: r.dominio, id_post: r.id_post }));
+      if (batchItems.length) {
+        apiGet(`periodic_analysis.php?history_batch=1&groups=${encodeURIComponent(JSON.stringify(batchItems))}`)
+          .then(byKey => {
+            if (!byKey) return;
+            Object.entries(byKey).forEach(([key, histRows]) => {
+              if (!histRows?.length) { periodicHistoryCache[key] = []; return; }
+              histRows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              periodicHistoryCache[key] = histRows.slice(1).map(h => ({
+                created_at: h.created_at,
+                status_compliance: h.status_compliance,
+                resumo_analise: h.resumo_analise || "",
+              }));
+            });
+          })
+          .catch(() => {});
+      }
+
       requestAnimationFrame(() => renderPeriodicChunk());
     } catch { }
     finally { periodicPrefetchBusy = false; }
@@ -3823,6 +3867,16 @@
     }
 
     await ensurePeriodicLoaded();
+
+    // NOVO: Buscar total real do backend (mais preciso que count local)
+    if (!hadData) {
+      try {
+        const raw = await apiGet(`periodic_analysis.php?limit=1&offset=0`);
+        if (raw?.total !== undefined && raw.total !== null) {
+          periodicAnalysisTotal = raw.total;
+        }
+      } catch {}
+    }
 
     if (periodicAnalysisAll.length === 0) {
       tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
@@ -4127,9 +4181,10 @@
     $("#filterLogDate").addEventListener("change", renderLogs);
     $("#filterLogUser").addEventListener("change", renderLogs);
 
-    // Periodic analysis filters - limpa fila de preload antes de re-renderizar
+    // Periodic analysis filters
     const handlePeriodicFilterChange = () => {
-      clearHistoryPreloadQueue();
+      // COMENTADO: clearHistoryPreloadQueue() não necessário com history_batch direto
+      // clearHistoryPreloadQueue();
       renderComplianceAnalysis();
     };
     $("#filterPeriodicStatus").addEventListener("change", handlePeriodicFilterChange);
