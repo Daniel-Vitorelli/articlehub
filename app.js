@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.41";
+  const APP_VERSION = "1.4.42";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1587,7 +1587,14 @@
     const raw = String(text || "").trim();
     if (!raw) return '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
     const normalized = raw.replace(/\r\n?/g, "\n");
-    const lines = normalized.split("\n");
+    // A IA às vezes devolve tudo numa linha só ("...termo. [PROBLEMAS]: 1. ...").
+    // Insere quebra antes de todo "[Rótulo]:" no meio da linha para o parser achar.
+    // Exige letra no rótulo (ignora "[0]:", "[1]:") e fecha-colchete em até 60 chars.
+    const withBreaks = normalized.replace(
+      /([^\n])(\[(?=[^\]\n]{0,60}[A-Za-zÀ-Úà-ú])[^\]\n]{1,60}\]:)/g,
+      "$1\n$2"
+    );
+    const lines = withBreaks.split("\n");
     const sections = [];
     let introLines = [];
     let current = null;
@@ -1604,7 +1611,7 @@
     }
     if (current) sections.push(current);
     // Sem nenhum cabeçalho reconhecível: renderiza o texto inteiro como corpo rico.
-    if (!sections.length) return renderComplianceBody(normalized);
+    if (!sections.length) return renderComplianceBody(withBreaks);
     let html = "";
     const intro = introLines.join("\n").trim();
     if (intro) html += renderComplianceBody(intro);
