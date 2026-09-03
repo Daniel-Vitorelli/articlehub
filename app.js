@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.39";
+  const APP_VERSION = "1.4.40";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1719,44 +1719,73 @@
       (!typeFilter || newRow.post_type === typeFilter) &&
       (!domainFilter || newRow.dominio === domainFilter);
 
-    const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
-    if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
+    // Memória: novo latest no grupo + antigo latest vira histórico local.
+    const oldLatest = group.sorted[0];
+    group.sorted.unshift(newRow);
+    if (periodicHistoryCache[key] !== undefined && oldLatest) {
+      periodicHistoryCache[key].unshift({
+        created_at: oldLatest.created_at,
+        status_compliance: oldLatest.status_compliance,
+        resumo_analise: oldLatest.resumo_analise || "",
+      });
+    }
+    const allIdx = periodicAnalysisAll.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
+    if (allIdx !== -1) periodicAnalysisAll[allIdx] = newRow;
 
-    if (matchesFilter) {
-      periodicAnalysisVisible.unshift(newRow);
-      periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      periodicAnalysisLoaded = 0;
-      const tbody = document.getElementById("periodicAnalysisBody");
-      if (tbody) {
-        const holder = document.createElement("tbody");
-        const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
-        holder.innerHTML = toRender.map(periodicRowHtml).join("");
-        tbody.innerHTML = "";
-        while (holder.firstChild) tbody.appendChild(holder.firstChild);
-        periodicAnalysisLoaded = toRender.length;
-        const infoEl = document.getElementById("periodicAnalysisInfo");
-        if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-        if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
-          insertSentinel(tbody);
-          setupSentinelObserver();
-        } else {
-          teardownSentinelObserver();
+    const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
+    const tbody = document.getElementById("periodicAnalysisBody");
+    const tr = tbody?.querySelector(`tr[data-periodic-key="${CSS.escape(key)}"]`) || null;
+
+    if (!matchesFilter) {
+      // Saiu do filtro atual (ex: estava vendo só "reprovados"): remove da view.
+      if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
+      if (tr) {
+        tr.remove();
+        if (periodicAnalysisLoaded > 0) periodicAnalysisLoaded--;
+      }
+      updatePeriodicInfo();
+      // Preenche o buraco com o próximo item ainda não renderizado, se houver.
+      if (tbody && periodicAnalysisLoaded < periodicAnalysisVisible.length) {
+        const next = periodicAnalysisVisible[periodicAnalysisLoaded];
+        if (next) {
+          const holder = document.createElement("tbody");
+          holder.innerHTML = periodicRowHtml(next);
+          const sentinel = document.getElementById("periodicScrollSentinel");
+          while (holder.firstChild) {
+            tbody.insertBefore(holder.firstChild, sentinel || null);
+          }
+          periodicAnalysisLoaded++;
+          updatePeriodicInfo();
         }
-        syncPeriodicAllFromGroups();
-        requestAnimationFrame(() => {
-          document.querySelectorAll("#periodicAnalysisBody tr").forEach((tr) => {
-            const badge = tr.querySelector("[data-key]");
-            if (badge && badge.getAttribute("data-key") === key) tr.classList.add("is-focused");
-          });
-        });
+      }
+      showToast("Análise reenviada — o item saiu do filtro atual.", "success");
+    } else {
+      // Update in-place na mesma posição (sem full re-render, sem perder scroll).
+      if (oldIdx !== -1) periodicAnalysisVisible[oldIdx] = newRow;
+      else periodicAnalysisVisible.push(newRow);
+      if (tr) {
+        tr.classList.remove("is-selected");
+        const dateEl = tr.querySelector(".periodic-date");
+        if (dateEl) dateEl.textContent = formatDateTime(createdAt);
+        const badge = tr.querySelector("[data-key]");
+        if (badge) {
+          badge.className = "status-badge nao_analisado compliance-clickable";
+          badge.textContent = "Não analisado";
+          badge.setAttribute("title", "Ver resumo e histórico da análise");
+        }
+        tr.classList.add("is-focused");
       }
     }
 
     apiPost("periodic_analysis.php", payload)
       .then((res) => {
         if (!res || !res.success) throw new Error(res?.message || "Resposta inesperada do servidor.");
-        const realRow = periodicAnalysisVisible.find((r) => r.id === tempId);
-        if (realRow) { realRow.id = res.id; realRow._realId = res.id; }
+        const gRow = group.sorted.find((r) => r.id === tempId);
+        if (gRow) gRow.id = res.id;
+        const vRow = periodicAnalysisVisible.find((r) => r.id === tempId);
+        if (vRow) vRow.id = res.id;
+        const aRow = periodicAnalysisAll.find((r) => r.id === tempId);
+        if (aRow) aRow.id = res.id;
       })
       .catch((err) => {
         showToast("Erro ao criar análise: " + (err?.message || "erro desconhecido"), "error");
