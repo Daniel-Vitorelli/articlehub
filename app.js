@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.42";
+  const APP_VERSION = "1.4.43";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -3122,6 +3122,15 @@
       return;
     }
 
+    // O servidor exige compliance "aprovado" (publishRequest). Avisar aqui,
+    // antes de pedir a URL — senão o usuário preenche tudo e só então recebe erro.
+    if (r.status_compliance !== "aprovado") {
+      alert(
+        'O artigo precisa estar com compliance "Aprovado" antes de ser publicado.',
+      );
+      return;
+    }
+
     $("#publishRequestId").value = reqId;
     $("#publishUrl").value = "";
     $("#publishUrl").className = "publish-url-input";
@@ -3270,24 +3279,34 @@
     urlInput.className = "publish-url-input";
 
     const r = requests.find((req) => req.id == reqId);
+    // Defesa extra (o modal já barra): servidor exige compliance "aprovado".
+    if (r && r.status_compliance !== "aprovado") {
+      showPublishError('O artigo precisa estar com compliance "Aprovado" para ser publicado.');
+      urlInput.className = "publish-url-input invalid";
+      return;
+    }
     apiPut("requests.php?action=publish", { id: reqId, url })
-      .then(() => {
+      .then(async () => {
         statusEl.className = "publish-status show success";
         spinner.style.display = "none";
         statusText.textContent = "✅ Artigo publicado com sucesso!";
         urlInput.className = "publish-url-input valid";
 
-        // Atualiza memória com o estado final do servidor (que faz
-        // SET status="published", published_url, imagem=NULL, imagem_nome=NULL)
-        // e re-renderiza a tabela para o badge mudar de Concluído → Publicado.
-        if (r) {
-          r.status = "published";
-          r.published_url = url;
-          r.has_imagem = 0;
-          r.imagem_nome = null;
-          if (requestHistoryCache[reqId]) delete requestHistoryCache[reqId];
-          renderRequests();
+        // Refresh autoritativo do servidor (que faz SET status="published",
+        // published_url, imagem=NULL) em vez de mutação local — elimina qualquer
+        // divergência (ex: polling que trocou o array `requests` durante o PUT).
+        try {
+          requests = await apiGet("requests.php");
+        } catch (_) {
+          if (r) {
+            r.status = "published";
+            r.published_url = url;
+            r.has_imagem = 0;
+            r.imagem_nome = null;
+          }
         }
+        if (requestHistoryCache[reqId]) delete requestHistoryCache[reqId];
+        renderRequests();
 
         setTimeout(() => {
           closeModal("modalPublish");
