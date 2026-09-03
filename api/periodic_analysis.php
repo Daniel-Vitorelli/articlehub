@@ -172,6 +172,81 @@ if ($method === 'POST') {
     $input = getInput();
     $action = $input['action'] ?? '';
 
+    if ($action === 'reanalyze_bulk') {
+        $items = $input['items'] ?? null;
+        if (!is_array($items) || count($items) === 0) {
+            jsonResponse(400, ['error' => 'Nenhum item para reanalisar']);
+        }
+        if (count($items) > 500) {
+            jsonResponse(400, ['error' => 'Máximo de 500 itens por vez']);
+        }
+
+        // Timestamp São Paulo (UTC-3) — único para todo o lote
+        $tz = new DateTimeZone('America/Sao_Paulo');
+        $now = new DateTime('now', $tz);
+        $createdAt = $now->format('Y-m-d H:i:s');
+
+        $stmt = $db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'publish_status'");
+        $hasPublishStatus = (bool)$stmt->fetch();
+
+        if ($hasPublishStatus) {
+            $stmt = $db->prepare(
+                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, created_at, publish_status)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+            );
+        } else {
+            $stmt = $db->prepare(
+                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?)'
+            );
+        }
+
+        $ids = [];
+        $keys = [];
+        try {
+            $db->beginTransaction();
+            foreach ($items as $it) {
+                if (empty($it['id_post']) && ($it['id_post'] ?? null) !== '0' && ($it['id_post'] ?? null) !== 0) continue;
+                if (empty($it['post_type'])) continue;
+                if (empty($it['dominio'])) continue;
+                if ($hasPublishStatus) {
+                    $stmt->execute([
+                        $it['id_post'],
+                        $it['post_type'],
+                        'nao_analisado',
+                        'esperanndo re-analise',
+                        $it['dominio'],
+                        $createdAt,
+                        $it['publish_status'] ?? 'draft'
+                    ]);
+                } else {
+                    $stmt->execute([
+                        $it['id_post'],
+                        $it['post_type'],
+                        'nao_analisado',
+                        'esperanndo re-analise',
+                        $it['dominio'],
+                        $createdAt
+                    ]);
+                }
+                $ids[] = (int)$db->lastInsertId();
+                $keys[] = $it['dominio'] . '::' . $it['id_post'];
+            }
+            $db->commit();
+        } catch (Exception $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            jsonResponse(500, ['error' => 'Falha ao criar análises em lote']);
+        }
+
+        jsonResponse(201, [
+            'success' => true,
+            'ids' => $ids,
+            'keys' => $keys,
+            'count' => count($ids),
+            'message' => count($ids) . ' análise(s) criada(s)'
+        ]);
+    }
+
     if ($action === 'reanalyze') {
         // Validar campos obrigatórios
         $required = ['id_post', 'post_type', 'dominio'];

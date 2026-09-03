@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.37";
+  const APP_VERSION = "1.4.38";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1774,31 +1774,53 @@
   function handleBulkReanalyze() {
     if (selectedPeriodicKeys.size === 0) return;
     const keys = Array.from(selectedPeriodicKeys);
-    if (!confirm(`Analisar novamente ${keys.length} ${keys.length === 1 ? "item" : "itens"} selecionados?`)) return;
 
-    const btn = $("#btnBulkReanalyze");
-    if (btn) {
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span> Criando...';
-      btn.style.opacity = "0.5";
-      btn.style.pointerEvents = "none";
-    }
+    // INSTANTÂNEO: limpa seleção primeiro — sem confirm, sem spinner, sem travar botão.
+    // O update otimista abaixo é in-place (só nas linhas afetadas) e o POST vai em background.
+    selectedPeriodicKeys.clear();
+    updateBulkUI();
+    const selAll = $("#periodicSelectAll");
+    if (selAll) { selAll.checked = false; selAll.indeterminate = false; }
 
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
     const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    const createdAtLabel = formatDateTime(createdAt);
     const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
     const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
     const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
-    const tempIds = new Map();
 
-    keys.forEach((key) => {
-      const [dominio, idPost] = key.split("::");
-      const group = periodicAnalysisGroups.find((g) => g.key === key);
-      const latest = group ? group.sorted[0] : periodicAnalysisVisible.find((r) => `${r.dominio}::${r.id_post}` === key);
+    // Mapas O(1) — evita find/findIndex por item (que era O(k*n)) e evita sort + full re-render.
+    const groupsByKey = new Map();
+    for (const g of periodicAnalysisGroups) groupsByKey.set(g.key, g);
+    const visibleIdxByKey = new Map();
+    for (let i = 0; i < periodicAnalysisVisible.length; i++) {
+      const r = periodicAnalysisVisible[i];
+      visibleIdxByKey.set(`${r.dominio}::${r.id_post ?? ""}`, i);
+    }
+    const allIdxByKey = new Map();
+    for (let i = 0; i < periodicAnalysisAll.length; i++) {
+      const r = periodicAnalysisAll[i];
+      allIdxByKey.set(`${r.dominio}::${r.id_post ?? ""}`, i);
+    }
+    const tbody = document.getElementById("periodicAnalysisBody");
+    const trByKey = new Map();
+    if (tbody) {
+      tbody.querySelectorAll("tr[data-periodic-key]").forEach((tr) => {
+        trByKey.set(tr.dataset.periodicKey, tr);
+      });
+    }
+
+    const items = [];
+    const tempIdByKey = new Map();
+    let removedCount = 0;
+
+    keys.forEach((key, idx) => {
+      const g = groupsByKey.get(key);
+      const latest = g ? g.sorted[0] : null;
       if (!latest) return;
-      const tempId = -Date.now() - Math.floor(Math.random() * 1000);
-      tempIds.set(tempId, key);
+      const tempId = -Date.now() - idx;
+      tempIdByKey.set(key, tempId);
       const newRow = {
         id: tempId,
         id_post: latest.id_post,
@@ -1810,89 +1832,113 @@
         publish_status: latest.publish_status || "draft",
         created_at: createdAt,
       };
-      const g = periodicAnalysisGroups.find((x) => x.key === key);
-      if (g) g.sorted.unshift(newRow);
-      else periodicAnalysisGroups.push({ key, sorted: [newRow] });
-      const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post}` === key);
-      if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
-      const matchesFilter =
-        (!statusFilter || newRow.status_compliance === statusFilter) &&
-        (!typeFilter || newRow.post_type === typeFilter) &&
-        (!domainFilter || newRow.dominio === domainFilter);
-      if (matchesFilter) periodicAnalysisVisible.unshift(newRow);
-    });
-
-    periodicAnalysisVisible.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    syncPeriodicAllFromGroups();
-    periodicAnalysisLoaded = 0;
-    periodicChunkBusy = false;
-    periodicChunkQueued = false;
-    const tb = document.getElementById("periodicAnalysisBody");
-    if (tb) {
-      const toRender = periodicAnalysisVisible.slice(0, Math.min(PERIODIC_PAGE_SIZE, periodicAnalysisVisible.length));
-      const holder = document.createElement("tbody");
-      holder.innerHTML = toRender.map(periodicRowHtml).join("");
-      tb.innerHTML = "";
-      while (holder.firstChild) tb.appendChild(holder.firstChild);
-      periodicAnalysisLoaded = toRender.length;
-      const infoEl = document.getElementById("periodicAnalysisInfo");
-      if (infoEl) infoEl.textContent = `Mostrando ${periodicAnalysisLoaded} de ${periodicAnalysisVisible.length} análises`;
-      if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
-        insertSentinelIfMissing(tb);
-        setupSentinelObserver();
-      }
-    }
-
-    selectedPeriodicKeys.clear();
-    updateBulkUI();
-    const selAll = $("#periodicSelectAll");
-    if (selAll) { selAll.checked = false; selAll.indeterminate = false; }
-    document.querySelectorAll(".periodic-checkbox").forEach((cb) => (cb.checked = false));
-    if (btn) {
-      btn.disabled = false;
-      btn.innerHTML = '<span>↺</span> Reanalisar Selecionados';
-      btn.style.opacity = "1";
-      btn.style.pointerEvents = "";
-    }
-
-    const payloads = keys.map((key) => {
-      const [dominio, idPost] = key.split("::");
-      const group = periodicAnalysisGroups.find((g) => g.key === key);
-      const latest = group ? group.sorted[0] : null;
-      if (!latest) return null;
-      return { key, payload: {
-        action: "reanalyze",
+      items.push({
         id_post: latest.id_post,
         post_type: latest.post_type,
         dominio: latest.dominio,
         publish_status: latest.publish_status || "draft",
-      }};
-    }).filter(Boolean);
+      });
 
-    let failCount = 0;
-    const concurrency = 3;
-    (async () => {
-      for (let i = 0; i < payloads.length; i += concurrency) {
-        const chunk = payloads.slice(i, i + concurrency);
-        await Promise.allSettled(chunk.map(async ({ key, payload }) => {
-          try {
-            const res = await apiPost("periodic_analysis.php", payload);
-            if (!res || !res.success) throw new Error(res?.message || "Falha");
-            const realRow = periodicAnalysisVisible.find((r) => {
-              for (const [tempId, k] of tempIds) {
-                if (k === key && r.id === tempId) return true;
-              }
-              return false;
-            });
-            if (realRow) realRow.id = res.id;
-          } catch (e) {
-            failCount++;
-            console.error("Falha ao reanalisar (background)", e);
-          }
-        }));
+      // Memória: grupo (novo latest) + histórico local (antigo latest vira histórico)
+      const oldLatest = g.sorted[0];
+      g.sorted.unshift(newRow);
+      if (periodicHistoryCache[key] !== undefined && oldLatest) {
+        periodicHistoryCache[key].unshift({
+          created_at: oldLatest.created_at,
+          status_compliance: oldLatest.status_compliance,
+          resumo_analise: oldLatest.resumo_analise || "",
+        });
       }
-      if (failCount) showToast(`Falha ao reanalisar: ${failCount} erro(s).`, "error");
-    })();
+
+      const matchesFilter =
+        (!statusFilter || newRow.status_compliance === statusFilter) &&
+        (!typeFilter || newRow.post_type === typeFilter) &&
+        (!domainFilter || newRow.dominio === domainFilter);
+
+      // Memória: All (replace in-place, sem rebuild de caches — domínio/tipo não mudam)
+      const ai = allIdxByKey.get(key);
+      if (ai !== undefined) periodicAnalysisAll[ai] = newRow;
+
+      // Memória: Visible (replace in-place para NÃO perder scroll/posição; sem sort)
+      const vi = visibleIdxByKey.get(key);
+      if (matchesFilter) {
+        if (vi !== undefined) periodicAnalysisVisible[vi] = newRow;
+        else periodicAnalysisVisible.push(newRow);
+      } else if (vi !== undefined) {
+        periodicAnalysisVisible.splice(vi, 1);
+        // Reindexa só o necessário (splice desloca índices seguintes)
+        for (let i = vi; i < periodicAnalysisVisible.length; i++) {
+          const r = periodicAnalysisVisible[i];
+          visibleIdxByKey.set(`${r.dominio}::${r.id_post ?? ""}`, i);
+        }
+        removedCount++;
+      }
+
+      // DOM: update in-place só na linha afetada (sem re-render da tabela)
+      const tr = trByKey.get(key);
+      if (!tr) return;
+      if (!matchesFilter) {
+        tr.remove();
+        if (periodicAnalysisLoaded > 0) periodicAnalysisLoaded--;
+        return;
+      }
+      tr.classList.remove("is-selected");
+      const cb = tr.querySelector(".periodic-checkbox");
+      if (cb) cb.checked = false;
+      const dateEl = tr.querySelector(".periodic-date");
+      if (dateEl) dateEl.textContent = createdAtLabel;
+      const badge = tr.querySelector("[data-key]");
+      if (badge) {
+        badge.className = "status-badge nao_analisado compliance-clickable";
+        badge.textContent = "Não analisado";
+        badge.setAttribute("title", "Ver resumo e histórico da análise");
+      }
+    });
+
+    if (removedCount > 0) updatePeriodicInfo();
+
+    if (!items.length) return;
+
+    // Background: 1 único request em lote (era N POSTs com concorrência 3).
+    apiPost("periodic_analysis.php", { action: "reanalyze_bulk", items })
+      .then((res) => {
+        if (!res || !res.success) throw new Error(res?.message || "Falha");
+        const ids = Array.isArray(res.ids) ? res.ids : [];
+        const resKeys = Array.isArray(res.keys) ? res.keys : keys;
+        resKeys.forEach((k, i) => {
+          const realId = ids[i];
+          if (!realId) return;
+          const tempId = tempIdByKey.get(k);
+          if (tempId == null) return;
+          const grp = groupsByKey.get(k);
+          if (grp) {
+            const row = grp.sorted.find((r) => r.id === tempId);
+            if (row) row.id = realId;
+          }
+          const vi2 = visibleIdxByKey.get(k);
+          if (vi2 !== undefined && periodicAnalysisVisible[vi2] && periodicAnalysisVisible[vi2].id === tempId) {
+            periodicAnalysisVisible[vi2].id = realId;
+          }
+          const ai2 = allIdxByKey.get(k);
+          if (ai2 !== undefined && periodicAnalysisAll[ai2] && periodicAnalysisAll[ai2].id === tempId) {
+            periodicAnalysisAll[ai2].id = realId;
+          }
+        });
+      })
+      .catch(() => {
+        // Fallback silencioso p/ backends sem o endpoint bulk: 1 POST por item, sem travar UI.
+        (async () => {
+          let failCount = 0;
+          for (const it of items) {
+            try {
+              await apiPost("periodic_analysis.php", { action: "reanalyze", ...it });
+            } catch (e) {
+              failCount++;
+            }
+          }
+          if (failCount) showToast(`Falha ao reanalisar: ${failCount} erro(s).`, "error");
+        })();
+      });
   }
 
   function openComplianceHistoryDetail(row) {
@@ -3057,11 +3103,6 @@
     urlInput.className = "publish-url-input";
 
     const r = requests.find((req) => req.id == reqId);
-    if (r) {
-      r.published_url = url;
-      r.published_at = new Date().toISOString();
-      renderRequests();
-    }
     apiPut("requests.php?action=publish", { id: reqId, url })
       .then(() => {
         statusEl.className = "publish-status show success";
@@ -3069,11 +3110,22 @@
         statusText.textContent = "✅ Artigo publicado com sucesso!";
         urlInput.className = "publish-url-input valid";
 
+        // Atualiza memória com o estado final do servidor (que faz
+        // SET status="published", published_url, imagem=NULL, imagem_nome=NULL)
+        // e re-renderiza a tabela para o badge mudar de Concluído → Publicado.
+        if (r) {
+          r.status = "published";
+          r.published_url = url;
+          r.has_imagem = 0;
+          r.imagem_nome = null;
+          if (requestHistoryCache[reqId]) delete requestHistoryCache[reqId];
+          renderRequests();
+        }
+
         setTimeout(() => {
           closeModal("modalPublish");
           submitBtn.disabled = false;
-          submitBtn.innerHTML = '<span>?</span> Publicar';
-          submitBtn.classList.remove("show");
+          submitBtn.innerHTML = '<span>✅</span> Validar e Publicar';
           urlInput.value = "";
           urlInput.className = "publish-url-input";
           statusEl.className = "";
