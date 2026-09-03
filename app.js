@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.38";
+  const APP_VERSION = "1.4.39";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -2164,6 +2164,9 @@
   });
 
   document.addEventListener("click", (e) => {
+    // Não intercepta cliques em elementos interativos (links Ver publicado/Editar,
+    // checkbox de seleção, botões) — deixa o comportamento nativo funcionar.
+    if (e.target.closest("a, button, input, select, textarea")) return;
     const tr = e.target.closest("#periodicAnalysisBody tr[data-periodic-key]");
     if (!tr) return;
     e.preventDefault();
