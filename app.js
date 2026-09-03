@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.40";
+  const APP_VERSION = "1.4.41";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1462,32 +1462,160 @@
       .replace(/>/g, "&gt;");
   }
 
+  // Normaliza rótulo de seção: minúsculas, sem acentos/diacríticos, "_" → espaço.
+  // Garante que "Instrução", "instrucao" e "INSTRUÇÃO" caiam no mesmo bucket.
+  function normalizeComplianceLabel(label) {
+    return String(label || "")
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLowerCase()
+      .replace(/[_\s]+/g, " ")
+      .trim();
+  }
+
+  // Tom semântico da seção pelo significado do rótulo (qualquer rótulo futuro
+  // com essas palavras ganha cor adequada sem precisar de regra nova no CSS).
+  function complianceSectionTone(normLabel) {
+    const n = normLabel || "";
+    if (/(problem|erro|falha|risco|reprov|critic|alert|pendenc|inconform|violac)/.test(n)) return "danger";
+    if (/(instrucao|sugest|recomend|orientacao|correcao|acao|proximo|dica)/.test(n)) return "success";
+    if (/(motivo|resumo|conclusao|resultado|parecer|decisao|status|veredito)/.test(n)) return "warning";
+    return "info";
+  }
+
+  // Detecta cabeçalho de seção numa linha. Aceita:
+  //   [Rótulo]:  |  [Rótulo]  |  **Rótulo:**  |  ## Rótulo  |  Rótulo: (curto)
+  function parseComplianceHeader(line) {
+    const t = String(line || "").trim();
+    if (!t) return null;
+    let m;
+    if ((m = t.match(/^\[([^\]]+)\]\s*:?\s*(.*)$/))) {
+      return m[1].trim() ? { label: m[1].trim(), rest: m[2] || "" } : null;
+    }
+    if ((m = t.match(/^\*\*([^*]+)\*\*\s*:?\s*(.*)$/))) {
+      return m[1].trim() ? { label: m[1].trim(), rest: m[2] || "" } : null;
+    }
+    if ((m = t.match(/^#{1,4}\s+(.+?)\s*:?\s*$/))) {
+      return m[1].trim() ? { label: m[1].trim(), rest: "" } : null;
+    }
+    // "Rótulo:" simples — curto, capitalizado, sem ser URL nem frase longa.
+    if (
+      t.length <= 40 &&
+      t.endsWith(":") &&
+      /^[A-ZÀ-Ú0-9\[#*]/.test(t) &&
+      !/^https?:/i.test(t)
+    ) {
+      const label = t.slice(0, -1).trim();
+      if (label && !/[.!?]$/.test(label)) return { label, rest: "" };
+    }
+    return null;
+  }
+
+  // Formatação inline SEGURA: recebe texto já escapado e adiciona
+  // `code`, **negrito** e links (code spans são protegidos via placeholder).
+  function renderComplianceInline(escaped) {
+    const codes = [];
+    let html = String(escaped).replace(/`([^`\n]+)`/g, (_, c) => {
+      codes.push(c);
+      return `\u0000${codes.length - 1}\u0000`;
+    });
+    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/(https?:\/\/[^\s<]+)/g, (m) => {
+      const trail = (m.match(/[.,;:!?)]+$/) || [""])[0];
+      const url = trail ? m.slice(0, -trail.length) : m;
+      if (!url) return m;
+      return `<a href="${url}" target="_blank" rel="noopener">${url}</a>${trail}`;
+    });
+    html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => `<code>${codes[Number(i)]}</code>`);
+    return html;
+  }
+
+  // Corpo rico: parágrafos (quebra simples vira <br>), listas com marcadores
+  // (-, *, •) e numeradas (1. / 1)). Tudo escapa HTML antes de formatar.
+  function renderComplianceBody(text) {
+    const lines = String(text || "").split("\n");
+    let html = "";
+    let listTag = null;
+    let paraLines = [];
+    const closeList = () => {
+      if (listTag) {
+        html += `</${listTag}>`;
+        listTag = null;
+      }
+    };
+    const flushPara = () => {
+      if (!paraLines.length) return;
+      const inner = renderComplianceInline(escapeHtml(paraLines.join("\n"))).replace(/\n/g, "<br>");
+      html += `<p class="compliance-section-body">${inner}</p>`;
+      paraLines = [];
+    };
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line) {
+        flushPara();
+        closeList();
+        continue;
+      }
+      let m;
+      if ((m = line.match(/^([-*•·])\s+(.*)$/))) {
+        flushPara();
+        if (listTag !== "ul") {
+          closeList();
+          html += "<ul>";
+          listTag = "ul";
+        }
+        html += `<li>${renderComplianceInline(escapeHtml(m[2]))}</li>`;
+      } else if ((m = line.match(/^(\d{1,3})[.)]\s+(.*)$/))) {
+        flushPara();
+        if (listTag !== "ol") {
+          closeList();
+          html += "<ol>";
+          listTag = "ol";
+        }
+        html += `<li>${renderComplianceInline(escapeHtml(m[2]))}</li>`;
+      } else {
+        closeList();
+        paraLines.push(line);
+      }
+    }
+    flushPara();
+    closeList();
+    return html || '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
+  }
+
   function renderComplianceResumo(text) {
     const raw = String(text || "").trim();
     if (!raw) return '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
     const normalized = raw.replace(/\r\n?/g, "\n");
-    const parts = normalized.split(/^(\[[^\]]+\]:)/m);
-    if (parts.length <= 1) {
-      return `<p class="compliance-section-body">${escapeHtml(raw)}</p>`;
+    const lines = normalized.split("\n");
+    const sections = [];
+    let introLines = [];
+    let current = null;
+    for (const line of lines) {
+      const h = parseComplianceHeader(line);
+      if (h) {
+        if (current) sections.push(current);
+        current = { label: h.label, bodyLines: h.rest ? [h.rest] : [] };
+      } else if (current) {
+        current.bodyLines.push(line);
+      } else {
+        introLines.push(line);
+      }
     }
+    if (current) sections.push(current);
+    // Sem nenhum cabeçalho reconhecível: renderiza o texto inteiro como corpo rico.
+    if (!sections.length) return renderComplianceBody(normalized);
     let html = "";
-    const intro = (parts[0] || "").trim();
-    if (intro) {
-      html += `<p class="compliance-section-body">${escapeHtml(intro)}</p>`;
-    }
-    for (let i = 1; i < parts.length; i += 2) {
-      const header = (parts[i] || "").trim();
-      const m = header.match(/^\[([^\]]+)\]/);
-      const label = m ? m[1] : "Análise";
-      const displayLabel = label.replace(/[_\s]+/g, " ").trim() || "Análise";
-      const body = (parts[i + 1] || "").trim();
-      const bodyHtml = body
-        ? escapeHtml(body)
-        : '<span style="color:var(--text-muted)">—</span>';
+    const intro = introLines.join("\n").trim();
+    if (intro) html += renderComplianceBody(intro);
+    for (const s of sections) {
+      const displayLabel = s.label.replace(/[_\s]+/g, " ").trim() || "Análise";
+      const norm = normalizeComplianceLabel(displayLabel);
+      const tone = complianceSectionTone(norm);
       html += `
-        <div class="compliance-section" data-label="${escapeAttr(displayLabel.toLowerCase())}">
+        <div class="compliance-section" data-label="${escapeAttr(norm)}" data-tone="${tone}">
           <span class="compliance-label">${escapeHtml(displayLabel)}</span>
-          <p class="compliance-section-body">${bodyHtml}</p>
+          ${renderComplianceBody(s.bodyLines.join("\n").trim())}
         </div>`;
     }
     return html;

@@ -1261,6 +1261,77 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   color: var(--accent-primary);
 }
 
+/* Tons semânticos (data-tone vem do JS por significado do rótulo;
+   cobre qualquer rótulo futuro sem nova regra por nome) */
+.compliance-section[data-tone="danger"] { border-color: rgba(229, 49, 112, 0.25); }
+.compliance-section[data-tone="danger"] .compliance-label {
+  background: rgba(229, 49, 112, 0.15);
+  color: var(--accent-danger);
+}
+.compliance-section[data-tone="success"] { border-color: rgba(44, 182, 125, 0.25); }
+.compliance-section[data-tone="success"] .compliance-label {
+  background: rgba(44, 182, 125, 0.15);
+  color: var(--accent-secondary);
+}
+.compliance-section[data-tone="warning"] { border-color: rgba(240, 165, 0, 0.25); }
+.compliance-section[data-tone="warning"] .compliance-label {
+  background: rgba(240, 165, 0, 0.15);
+  color: var(--accent-warning);
+}
+.compliance-section[data-tone="info"] { border-color: rgba(127, 90, 240, 0.12); }
+.compliance-section[data-tone="info"] .compliance-label {
+  background: rgba(127, 90, 240, 0.15);
+  color: var(--accent-primary);
+}
+
+/* Corpo rico do resumo: listas, links, código, ênfase e espaçamento */
+#complianceResumo ul,
+#complianceResumo ol,
+#complianceDetailResumo ul,
+#complianceDetailResumo ol {
+  margin: 8px 0 8px;
+  padding-left: 20px;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  line-height: 1.7;
+}
+#complianceResumo li,
+#complianceDetailResumo li {
+  margin-bottom: 4px;
+}
+#complianceResumo li:last-child,
+#complianceDetailResumo li:last-child {
+  margin-bottom: 0;
+}
+#complianceResumo p.compliance-section-body + p.compliance-section-body,
+#complianceResumo p.compliance-section-body + ul,
+#complianceResumo p.compliance-section-body + ol,
+#complianceResumo ul + p.compliance-section-body,
+#complianceResumo ol + p.compliance-section-body {
+  margin-top: 8px;
+}
+#complianceResumo a,
+#complianceDetailResumo a {
+  color: var(--accent-primary);
+  text-decoration: underline;
+  word-break: break-all;
+}
+#complianceResumo code,
+#complianceDetailResumo code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  background: rgba(127, 90, 240, 0.12);
+  border: 1px solid rgba(127, 90, 240, 0.18);
+  border-radius: 5px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+#complianceResumo strong,
+#complianceDetailResumo strong {
+  color: var(--text-primary, #fff);
+  font-weight: 700;
+}
+
 /* Row Actions */
 .row-actions {
   display: flex;
