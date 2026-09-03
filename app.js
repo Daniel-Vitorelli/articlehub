@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.43";
+  const APP_VERSION = "1.4.44";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1864,20 +1864,22 @@
         resumo_analise: oldLatest.resumo_analise || "",
       });
     }
+    // All: nova posição no topo (é a análise mais recente do grupo).
     const allIdx = periodicAnalysisAll.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
-    if (allIdx !== -1) periodicAnalysisAll[allIdx] = newRow;
+    if (allIdx !== -1) periodicAnalysisAll.splice(allIdx, 1);
+    periodicAnalysisAll.unshift(newRow);
 
     const oldIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
+    if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
     const tbody = document.getElementById("periodicAnalysisBody");
     const tr = tbody?.querySelector(`tr[data-periodic-key="${CSS.escape(key)}"]`) || null;
+    if (tr) {
+      tr.remove();
+      if (periodicAnalysisLoaded > 0) periodicAnalysisLoaded--;
+    }
 
     if (!matchesFilter) {
-      // Saiu do filtro atual (ex: estava vendo só "reprovados"): remove da view.
-      if (oldIdx !== -1) periodicAnalysisVisible.splice(oldIdx, 1);
-      if (tr) {
-        tr.remove();
-        if (periodicAnalysisLoaded > 0) periodicAnalysisLoaded--;
-      }
+      // Saiu do filtro atual (ex: estava vendo só "reprovados"): não volta à lista.
       updatePeriodicInfo();
       // Preenche o buraco com o próximo item ainda não renderizado, se houver.
       if (tbody && periodicAnalysisLoaded < periodicAnalysisVisible.length) {
@@ -1895,20 +1897,29 @@
       }
       showToast("Análise reenviada — o item saiu do filtro atual.", "success");
     } else {
-      // Update in-place na mesma posição (sem full re-render, sem perder scroll).
-      if (oldIdx !== -1) periodicAnalysisVisible[oldIdx] = newRow;
-      else periodicAnalysisVisible.push(newRow);
-      if (tr) {
-        tr.classList.remove("is-selected");
-        const dateEl = tr.querySelector(".periodic-date");
-        if (dateEl) dateEl.textContent = formatDateTime(createdAt);
-        const badge = tr.querySelector("[data-key]");
-        if (badge) {
-          badge.className = "status-badge nao_analisado compliance-clickable";
-          badge.textContent = "Não analisado";
-          badge.setAttribute("title", "Ver resumo e histórico da análise");
+      // Nova posição: topo da lista (createdAt=now é a maior data) + scroll até a linha.
+      periodicAnalysisVisible.unshift(newRow);
+      if (tbody) {
+        const holder = document.createElement("tbody");
+        holder.innerHTML = periodicRowHtml(newRow);
+        const newTr = holder.firstChild;
+        if (newTr) {
+          newTr.classList.add("is-focused");
+          tbody.insertBefore(newTr, tbody.firstChild);
+          periodicAnalysisLoaded++;
+          updatePeriodicInfo();
+          requestAnimationFrame(() => {
+            try { newTr.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (_) {}
+          });
         }
-        tr.classList.add("is-focused");
+      }
+    }
+    if (tbody) {
+      if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
+        insertSentinel(tbody);
+        setupSentinelObserver();
+      } else {
+        teardownSentinelObserver();
       }
     }
 
@@ -1940,7 +1951,7 @@
     const keys = Array.from(selectedPeriodicKeys);
 
     // INSTANTÂNEO: limpa seleção primeiro — sem confirm, sem spinner, sem travar botão.
-    // O update otimista abaixo é in-place (só nas linhas afetadas) e o POST vai em background.
+    // Update otimista move as linhas ao topo (nova posição) e o POST vai em background.
     selectedPeriodicKeys.clear();
     updateBulkUI();
     const selAll = $("#periodicSelectAll");
@@ -1949,24 +1960,13 @@
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
     const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const createdAtLabel = formatDateTime(createdAt);
     const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
     const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
     const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
 
-    // Mapas O(1) — evita find/findIndex por item (que era O(k*n)) e evita sort + full re-render.
+    // Mapa O(1) dos grupos (o array de grupos não é reordenado, só os sorted internos).
     const groupsByKey = new Map();
     for (const g of periodicAnalysisGroups) groupsByKey.set(g.key, g);
-    const visibleIdxByKey = new Map();
-    for (let i = 0; i < periodicAnalysisVisible.length; i++) {
-      const r = periodicAnalysisVisible[i];
-      visibleIdxByKey.set(`${r.dominio}::${r.id_post ?? ""}`, i);
-    }
-    const allIdxByKey = new Map();
-    for (let i = 0; i < periodicAnalysisAll.length; i++) {
-      const r = periodicAnalysisAll[i];
-      allIdxByKey.set(`${r.dominio}::${r.id_post ?? ""}`, i);
-    }
     const tbody = document.getElementById("periodicAnalysisBody");
     const trByKey = new Map();
     if (tbody) {
@@ -1977,7 +1977,8 @@
 
     const items = [];
     const tempIdByKey = new Map();
-    let removedCount = 0;
+    const movedRows = []; // newRows que continuam na view → topo, na ordem da seleção
+    const allNewRows = []; // todos os newRows (All não tem filtro)
 
     keys.forEach((key, idx) => {
       const g = groupsByKey.get(key);
@@ -2019,47 +2020,53 @@
         (!typeFilter || newRow.post_type === typeFilter) &&
         (!domainFilter || newRow.dominio === domainFilter);
 
-      // Memória: All (replace in-place, sem rebuild de caches — domínio/tipo não mudam)
-      const ai = allIdxByKey.get(key);
-      if (ai !== undefined) periodicAnalysisAll[ai] = newRow;
+      allNewRows.push(newRow);
+      if (matchesFilter) movedRows.push(newRow);
 
-      // Memória: Visible (replace in-place para NÃO perder scroll/posição; sem sort)
-      const vi = visibleIdxByKey.get(key);
-      if (matchesFilter) {
-        if (vi !== undefined) periodicAnalysisVisible[vi] = newRow;
-        else periodicAnalysisVisible.push(newRow);
-      } else if (vi !== undefined) {
-        periodicAnalysisVisible.splice(vi, 1);
-        // Reindexa só o necessário (splice desloca índices seguintes)
-        for (let i = vi; i < periodicAnalysisVisible.length; i++) {
-          const r = periodicAnalysisVisible[i];
-          visibleIdxByKey.set(`${r.dominio}::${r.id_post ?? ""}`, i);
-        }
-        removedCount++;
-      }
+      // Memória: tira da posição antiga (volta ao topo logo abaixo, em bloco).
+      const vi = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
+      if (vi !== -1) periodicAnalysisVisible.splice(vi, 1);
 
-      // DOM: update in-place só na linha afetada (sem re-render da tabela)
+      // DOM: remove a linha antiga (a nova entra no topo em bloco, abaixo).
       const tr = trByKey.get(key);
-      if (!tr) return;
-      if (!matchesFilter) {
+      if (tr) {
         tr.remove();
         if (periodicAnalysisLoaded > 0) periodicAnalysisLoaded--;
-        return;
-      }
-      tr.classList.remove("is-selected");
-      const cb = tr.querySelector(".periodic-checkbox");
-      if (cb) cb.checked = false;
-      const dateEl = tr.querySelector(".periodic-date");
-      if (dateEl) dateEl.textContent = createdAtLabel;
-      const badge = tr.querySelector("[data-key]");
-      if (badge) {
-        badge.className = "status-badge nao_analisado compliance-clickable";
-        badge.textContent = "Não analisado";
-        badge.setAttribute("title", "Ver resumo e histórico da análise");
       }
     });
 
-    if (removedCount > 0) updatePeriodicInfo();
+    // All: tira antigas e põe as novas no topo (são as análises mais recentes).
+    for (const nr of allNewRows) {
+      const ai = periodicAnalysisAll.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === `${nr.dominio}::${nr.id_post ?? ""}`);
+      if (ai !== -1) periodicAnalysisAll.splice(ai, 1);
+    }
+    if (allNewRows.length) periodicAnalysisAll.unshift(...allNewRows);
+
+    // Visible + DOM: bloco das reanalisadas no topo + scroll até a primeira.
+    if (movedRows.length) periodicAnalysisVisible.unshift(...movedRows);
+    if (tbody && movedRows.length) {
+      const holder = document.createElement("tbody");
+      holder.innerHTML = movedRows.map(periodicRowHtml).join("");
+      const frag = document.createDocumentFragment();
+      while (holder.firstChild) frag.appendChild(holder.firstChild);
+      tbody.insertBefore(frag, tbody.firstChild);
+      periodicAnalysisLoaded += movedRows.length;
+      const firstTr = tbody.querySelector("tr[data-periodic-key]");
+      if (firstTr) {
+        requestAnimationFrame(() => {
+          try { firstTr.scrollIntoView({ behavior: "smooth", block: "center" }); } catch (_) {}
+        });
+      }
+    }
+    updatePeriodicInfo();
+    if (tbody) {
+      if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
+        insertSentinel(tbody);
+        setupSentinelObserver();
+      } else {
+        teardownSentinelObserver();
+      }
+    }
 
     if (!items.length) return;
 
@@ -2079,14 +2086,10 @@
             const row = grp.sorted.find((r) => r.id === tempId);
             if (row) row.id = realId;
           }
-          const vi2 = visibleIdxByKey.get(k);
-          if (vi2 !== undefined && periodicAnalysisVisible[vi2] && periodicAnalysisVisible[vi2].id === tempId) {
-            periodicAnalysisVisible[vi2].id = realId;
-          }
-          const ai2 = allIdxByKey.get(k);
-          if (ai2 !== undefined && periodicAnalysisAll[ai2] && periodicAnalysisAll[ai2].id === tempId) {
-            periodicAnalysisAll[ai2].id = realId;
-          }
+          const vRow = periodicAnalysisVisible.find((r) => r.id === tempId);
+          if (vRow) vRow.id = realId;
+          const aRow = periodicAnalysisAll.find((r) => r.id === tempId);
+          if (aRow) aRow.id = realId;
         });
       })
       .catch(() => {
