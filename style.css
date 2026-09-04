@@ -576,6 +576,26 @@ body::before {
   gap: 12px;
 }
 
+/* Indicador discreto de sincronização (webhook processando em background) */
+.sync-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  opacity: 0;
+  flex-shrink: 0;
+  pointer-events: none;
+  transition: opacity 0.3s;
+}
+.sync-dot.on {
+  opacity: 0.9;
+  animation: syncPulse 1.1s ease-in-out infinite;
+}
+@keyframes syncPulse {
+  0%, 100% { transform: scale(1); opacity: 0.45; }
+  50% { transform: scale(1.35); opacity: 1; }
+}
+
 .search-box {
   position: relative;
 }

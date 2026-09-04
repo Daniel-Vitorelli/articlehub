@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.47";
+  const APP_VERSION = "1.4.48";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -721,7 +721,28 @@
   // ---- Realtime via SSE + Webhook ----
   // Atualiza em segundo plano TODOS os dados da view atual, sem nenhum indicador
   // de carregamento. A tela só é substituída quando os fetches terminam.
-  async function silentRefreshActiveView() {
+  // Indicador discreto de sync no header durante processamento de webhook.
+  // Contador para refreshes sobrepostos: só apaga quando todos terminarem.
+  let syncTrackCount = 0;
+  function syncTrackStart() {
+    syncTrackCount++;
+    if (!is("admin")) return; // indicador visível só para admin
+    const dot = document.getElementById("realtimeSyncDot");
+    if (dot) dot.classList.add("on");
+  }
+  function syncTrackDone() {
+    if (syncTrackCount > 0) syncTrackCount--;
+    if (syncTrackCount === 0) {
+      const dot = document.getElementById("realtimeSyncDot");
+      if (dot) dot.classList.remove("on");
+    }
+  }
+  async function silentRefreshActiveView(opts) {
+    // Só mostra o ponto quando o refresh veio do webhook (operações locais
+    // como enviar mensagem ou trocar status não acendem o indicador).
+    const trackSync = !!(opts && opts.fromWebhook);
+    if (trackSync) syncTrackStart();
+    try {
     // Notificações/mensagens: badge sempre atualizado
     try {
       notifications = await apiGet("notifications.php");
@@ -734,9 +755,21 @@
     if (!view) return;
 
     if (view === "requests") {
-      // NÃO FAZ NADA: o btnResetCompliance já atualiza a linha diretamente
-      // na memória e re-renderiza só a linha afetada (via updateRequestRow).
-      // O SSE/webhook trará dados frescos depois.
+      // Webhook/SSE = dado novo no banco (pipeline de compliance terminou ou
+      // edição externa). Busca em background sem spinner e re-renderiza lendo
+      // os filtros atuais do DOM (renderRequests preserva status/prioridade/
+      // blog/redator/solicitante/busca). Só aplica se o usuário ainda estiver
+      // na view (evita re-render no meio de uma navegação).
+      try {
+        const fresh = await apiGet("requests.php");
+        const stillHere = document.querySelector('.nav-link.active[data-view="requests"]');
+        if (stillHere) {
+          requests = fresh;
+          renderRequests();
+        } else {
+          requests = fresh;
+        }
+      } catch (_) {}
     } else if (view === "trash") {
       try {
         deletedRequests = await apiGet("requests.php?action=deleted");
@@ -762,6 +795,9 @@
       } catch (_) {}
     } else if (view === "messages") {
       try { await renderMessages(); } catch (_) {}
+    }
+    } finally {
+      if (trackSync) syncTrackDone();
     }
   }
 
@@ -795,7 +831,7 @@
           // Refresh em BACKGROUND de tudo o que o usuário está vendo.
           // Não é limitado a ids específicos: atualiza TODOS os dados da view atual.
           // Sem spinner: a tela só é atualizada quando os fetches terminam.
-          await silentRefreshActiveView();
+          await silentRefreshActiveView({ fromWebhook: true });
         } catch (err) {
           console.error("Erro ao processar refresh realtime:", err);
         }
@@ -2009,6 +2045,16 @@
     const bulkCount = $("#bulkCount");
     if (bulkCount) bulkCount.textContent = count;
     if (bulkBtn) bulkBtn.style.display = count > 0 ? "" : "none";
+    // "Todas" só existe para desmarcar: escondido sem seleção, visível com seleção.
+    const selWrap = $("#periodicSelectAllWrap");
+    if (selWrap) selWrap.style.display = count > 0 ? "flex" : "none";
+    const selAll = $("#periodicSelectAll");
+    if (selAll && count > 0) {
+      const total = periodicAnalysisVisible.length;
+      const allOn = total > 0 && selectedPeriodicKeys.size >= total;
+      selAll.checked = allOn;
+      selAll.indeterminate = !allOn;
+    }
   }
 
   function handleBulkReanalyze() {
@@ -2522,23 +2568,18 @@
   const selectAll = $("#periodicSelectAll");
   if (selectAll)
     selectAll.addEventListener("change", (e) => {
-      // Toggle real: se já há seleção -> limpa TUDO (deselecionar todas de uma vez);
-      // se não há -> seleciona todas as linhas carregadas (visíveis e fora da tela).
-      const hadSelection = selectedPeriodicKeys.size > 0;
-      if (hadSelection) {
-        selectedPeriodicKeys.clear();
-      } else {
-        periodicAnalysisVisible.forEach((r) => {
-          selectedPeriodicKeys.add(`${r.dominio}::${r.id_post ?? ""}`);
-        });
-      }
-      // Sincroniza checkboxes e linhas já renderizadas no DOM
+      // Só aparece quando já há seleção: serve apenas para desmarcar tudo.
+      selectedPeriodicKeys.clear();
+      // Sincroniza checkboxes e linhas já renderizadas no DOM.
+      // Linha desmarcada também perde o foco (is-focused).
       document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
-        const k = cb.dataset.periodicKey;
         const tr = cb.closest("tr");
-        const on = selectedPeriodicKeys.has(k);
-        cb.checked = on;
-        if (tr) tr.classList.toggle("is-selected", on);
+        const wasOn = cb.checked;
+        cb.checked = false;
+        if (tr) {
+          tr.classList.remove("is-selected");
+          if (wasOn) tr.classList.remove("is-focused");
+        }
       });
       updateBulkUI();
       e.target.indeterminate = false;
@@ -2555,7 +2596,8 @@
         if (tr) tr.classList.add("is-selected");
       } else {
         selectedPeriodicKeys.delete(k);
-        if (tr) tr.classList.remove("is-selected");
+        // Linha desmarcada também perde o foco (is-focused).
+        if (tr) tr.classList.remove("is-selected", "is-focused");
       }
       updateBulkUI();
       e.stopPropagation();
