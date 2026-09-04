@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.48";
+  const APP_VERSION = "1.4.49";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -770,11 +770,14 @@
           requests = fresh;
         }
       } catch (_) {}
+      // Históricos em background (não bloqueiam a tabela): aquecem o cache dos modais.
+      refreshHistoryCaches();
     } else if (view === "trash") {
       try {
         deletedRequests = await apiGet("requests.php?action=deleted");
         renderTrash();
       } catch (_) {}
+      refreshHistoryCaches();
       // NÃO recarrega a periódica em background pelo mesmo motivo acima.
     } else if (view === "compliance-analysis") {
       // Webhook/SSE = dado novo no banco (pipeline terminou ou edição manual).
@@ -786,13 +789,15 @@
       } catch (e) {
         console.error("Falha ao atualizar periódica via realtime:", e);
       }
-      // Mantém requests em cache em background (sem UI)
+      // Mantém requests e históricos em cache em background (sem UI)
       apiGet("requests.php").then((d) => { requests = d; }).catch(() => {});
+      refreshHistoryCaches();
     } else if (view === "dashboard") {
       try {
         requests = await apiGet("requests.php");
         renderDashboard();
       } catch (_) {}
+      refreshHistoryCaches();
     } else if (view === "messages") {
       try { await renderMessages(); } catch (_) {}
     }
@@ -809,6 +814,17 @@
       m[h.request_id].push(h);
     });
     return m;
+  }
+
+  // Revalida os caches de histórico em background (após webhook/refresh).
+  // Não toca na UI: os modais abrem instantâneos do cache e se revalidam sozinhos.
+  function refreshHistoryCaches() {
+    apiGet("requests.php?action=history_all")
+      .then((d) => { requestHistoryCache = buildHistoryCache(d); })
+      .catch(() => {});
+    apiGet("compliance.php?action=history_all")
+      .then((d) => { complianceHistoryCache = buildHistoryCache(d); })
+      .catch(() => {});
   }
 
   function connectRealtime() {
@@ -1737,18 +1753,57 @@
       const periodicKey = modalEl?.dataset?.periodicKey;
 
       if (periodicKey) {
-        if (periodicHistoryCache[periodicKey] !== undefined) {
-          complianceHistoryProvider = { periodicKey, rows: periodicHistoryCache[periodicKey] };
-          renderComplianceHistoryRows(periodicHistoryCache[periodicKey]);
+        const cachedP = periodicHistoryCache[periodicKey];
+        if (cachedP !== undefined) {
+          complianceHistoryProvider = { periodicKey, rows: cachedP };
+          renderComplianceHistoryRows(cachedP);
         }
-      } else if (complianceHistoryProvider?.rows?.length) {
-        renderComplianceHistoryRows(complianceHistoryProvider.rows);
+        // Stale-while-revalidate (igual ao de solicitações): o cache pode ter sido
+        // limpo/atualizado pelo webhook com o modal aberto — busca o fresco em
+        // background e atualiza se o modal continuar no mesmo grupo.
+        const sepIdx = periodicKey.lastIndexOf("::");
+        const pDom = sepIdx === -1 ? periodicKey : periodicKey.slice(0, sepIdx);
+        const pId = sepIdx === -1 ? "" : periodicKey.slice(sepIdx + 2);
+        apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(pDom)}&id_post=${encodeURIComponent(pId)}`)
+          .then((raw) => {
+            const data = Array.isArray(raw) ? raw : (raw?.data || []);
+            const historyOnly = data.slice(1).map((h) => ({
+              created_at: h.created_at,
+              status_compliance: h.status_compliance,
+              resumo_analise: h.resumo_analise || "",
+            }));
+            periodicHistoryCache[periodicKey] = historyOnly;
+            const m = document.getElementById("modalCompliance");
+            const cont = document.getElementById("complianceHistoryContainer");
+            if (m?.dataset?.periodicKey === periodicKey && cont && cont.style.display !== "none") {
+              complianceHistoryProvider = { periodicKey, rows: historyOnly };
+              renderComplianceHistoryRows(historyOnly);
+            }
+          })
+          .catch(() => {
+            if (cachedP === undefined) renderComplianceHistoryRows([]);
+          });
       } else {
+        // Stale-while-revalidate: mostra o cache na hora (instantâneo) e busca o
+        // fresco em background; atualiza se o modal continuar aberto no mesmo request.
         const id = Number(modalEl?.dataset?.requestId);
         if (id) {
           const cached = complianceHistoryCache[id];
           if (cached) renderComplianceHistoryRows(cached);
-          else await loadComplianceHistory(id);
+          apiGet(`compliance.php?request_id=${id}`)
+            .then((rows) => {
+              const data = Array.isArray(rows) ? rows : [];
+              complianceHistoryCache[id] = data;
+              const m = document.getElementById("modalCompliance");
+              const cont = document.getElementById("complianceHistoryContainer");
+              if (m && Number(m.dataset?.requestId) === id && !m.dataset?.periodicKey && cont && cont.style.display !== "none") {
+                complianceHistoryProvider = { rows: data };
+                renderComplianceHistoryRows(data);
+              }
+            })
+            .catch(() => {
+              if (!cached) renderComplianceHistoryRows([]);
+            });
         }
       }
       container.style.display = "block";
@@ -1791,7 +1846,9 @@
   async function loadComplianceHistory(requestId) {
     try {
       const rows = await apiGet(`compliance.php?request_id=${requestId}`);
-      renderComplianceHistoryRows(rows);
+      const data = Array.isArray(rows) ? rows : [];
+      complianceHistoryCache[requestId] = data;
+      renderComplianceHistoryRows(data);
     } catch (e) {
       renderComplianceHistoryRows([]);
     }
@@ -2621,10 +2678,11 @@
     if (!id) return;
         // INSTANTÂNEO: fecha modal e atualiza a UI IMEDIATAMENTE (antes do fetch).
         // O request vai em fire-and-forget.
+        // Obs: NÃO limpa os caches de histórico aqui — o backend só zera a linha
+        // atual (resumo=NULL) e mantém request_history/compliance_history, então
+        // o cache continua válido.
         closeModal("modalCompliance");
         updateRequestRow(id);
-        if (requestHistoryCache[id]) requestHistoryCache[id] = [];
-        if (complianceHistoryCache[id]) complianceHistoryCache[id] = [];
         apiPut("requests.php?action=reset_compliance", { id }).catch((err) => {
           alert("Erro ao redefinir compliance: " + err.message);
         });
@@ -3479,7 +3537,12 @@
             r.imagem_nome = null;
           }
         }
-        if (requestHistoryCache[reqId]) delete requestHistoryCache[reqId];
+        // Revalida o histórico em background em vez de apagar o cache: o publish
+        // insere linha em request_history, então o cache antigo está desatualizado
+        // mas um `delete` deixaria o modal detalhe vazio até o próximo login.
+        apiGet(`requests.php?action=history&id=${reqId}`)
+          .then((rows) => { requestHistoryCache[reqId] = Array.isArray(rows) ? rows : []; })
+          .catch(() => {});
         renderRequests();
 
         setTimeout(() => {
