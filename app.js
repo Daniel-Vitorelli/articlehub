@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.44";
+  const APP_VERSION = "1.4.45";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -493,11 +493,41 @@
     periodicAnalysisVisible = periodicAnalysisAll.slice();
   }
 
-  // Recarrega a análise periódica do servidor (usado após reanálise em lote) silenciosamente
+  // Recarrega a análise periódica do servidor (usado pelo webhook/SSE).
+  // Busca a primeira página agrupada (latest por grupo) e reconstrói a memória.
+  // O restante (prefetch) continua via renderPeriodicChunk/prefetchNextPage.
   async function reloadPeriodicFromServer() {
     try {
-      const raw = await apiGet("periodic_analysis.php");
-      buildPeriodicInMemory(raw);
+      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`);
+      const rows = Array.isArray(raw) ? raw : (raw?.data || []);
+      // Preserva linhas otimistas ainda não confirmadas pelo servidor (id negativo)
+      const optimistic = [];
+      for (const g of periodicAnalysisGroups) {
+        for (const r of g.sorted) {
+          if (r.id < 0) optimistic.push(r);
+        }
+      }
+      buildPeriodicInMemory(rows);
+      periodicPrefetchOffset = rows.length === 0 ? -1 : rows.length;
+      if (raw && !Array.isArray(raw) && raw.total != null) {
+        periodicAnalysisTotal = raw.total;
+      }
+      // Reinsere otimistas que o servidor ainda não retornou (evita sumiço no refresh)
+      if (optimistic.length) {
+        const seen = new Set(periodicAnalysisAll.map((r) => `${r.dominio}::${r.id_post ?? ""}`));
+        optimistic.forEach((r) => {
+          const key = `${r.dominio}::${r.id_post ?? ""}`;
+          if (!seen.has(key)) {
+            const g = periodicAnalysisGroups.find((gg) => gg.key === key);
+            if (g) g.sorted.unshift(r);
+            else periodicAnalysisGroups.push({ key, sorted: [r] });
+            periodicAnalysisAll.unshift(r);
+            seen.add(key);
+          }
+        });
+      }
+      // Histórico pode ter mudado (resumo/status) — invalida para refetch sob demanda
+      Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
     } catch (e) {
       console.error("Falha ao recarregar periódica:", e);
     }
@@ -703,14 +733,11 @@
       } catch (_) {}
       // NÃO recarrega a periódica em background pelo mesmo motivo acima.
     } else if (view === "compliance-analysis") {
-      // NÃO recarrega do servidor: a atualização otimista já inseriu a nova linha
-      // na memória. Recarregar agora seria:
-      // 1) Lento (tabela inteira do servidor)
-      // 2) Substituiria dados otimistas por dados desatualizados do servidor
-      //    (pipeline ainda não terminou de processar)
-      // O SSE vai trazer dados frescos quando o pipeline realmente terminar.
+      // Webhook/SSE = dado novo no banco (pipeline terminou ou edição manual).
+      // Recarrega a primeira página do servidor e re-renderiza preservando seleção/filtros.
+      // As linhas otimistas (reanalyze clicado agora) são preservadas dentro de reloadPeriodicFromServer.
       try {
-        await ensurePeriodicLoaded();
+        await reloadPeriodicFromServer();
         await renderComplianceAnalysis({ preserveSelection: true });
       } catch (e) {
         console.error("Falha ao atualizar periódica via realtime:", e);
