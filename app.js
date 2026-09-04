@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.45";
+  const APP_VERSION = "1.4.46";
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -512,17 +512,25 @@
       if (raw && !Array.isArray(raw) && raw.total != null) {
         periodicAnalysisTotal = raw.total;
       }
-      // Reinsere otimistas que o servidor ainda não retornou (evita sumiço no refresh)
+      // Reinsere otimistas que o servidor ainda não retornou (evita sumiço no refresh).
+      // Obs: a chave é dominio::id_post, igual à do latest antigo — por isso NÃO basta
+      // checar "chave já existe": o otimista é mais novo e precisa virar o latest.
       if (optimistic.length) {
-        const seen = new Set(periodicAnalysisAll.map((r) => `${r.dominio}::${r.id_post ?? ""}`));
         optimistic.forEach((r) => {
           const key = `${r.dominio}::${r.id_post ?? ""}`;
-          if (!seen.has(key)) {
-            const g = periodicAnalysisGroups.find((gg) => gg.key === key);
-            if (g) g.sorted.unshift(r);
-            else periodicAnalysisGroups.push({ key, sorted: [r] });
+          let g = periodicAnalysisGroups.find((gg) => gg.key === key);
+          if (g) {
+            if (!g.sorted.some((x) => x.id === r.id)) g.sorted.unshift(r);
+          } else {
+            g = { key, sorted: [r] };
+            periodicAnalysisGroups.push(g);
+          }
+          const ai = periodicAnalysisAll.findIndex((x) => `${x.dominio}::${x.id_post ?? ""}` === key);
+          if (ai !== -1) {
+            // Só substitui se o atual não for o próprio otimista
+            if (periodicAnalysisAll[ai].id !== r.id) periodicAnalysisAll[ai] = r;
+          } else {
             periodicAnalysisAll.unshift(r);
-            seen.add(key);
           }
         });
       }
@@ -1929,7 +1937,8 @@
       if (tbody) {
         const holder = document.createElement("tbody");
         holder.innerHTML = periodicRowHtml(newRow);
-        const newTr = holder.firstChild;
+        // holder.firstChild pode ser nó de texto (whitespace do template) — pega o <tr> de fato.
+        const newTr = holder.querySelector("tr");
         if (newTr) {
           newTr.classList.add("is-focused");
           tbody.insertBefore(newTr, tbody.firstChild);
