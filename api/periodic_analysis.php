@@ -46,8 +46,9 @@ if ($method === 'GET') {
         // Total agrupado: só calcula quando offset=0 (troca de filtro), não em cada scroll.
         $total = null;
         if ($offset === 0) {
+            // <=> (null-safe) para não excluir grupos com id_post NULL (NULL=NULL é falso com =).
             $countSql = "SELECT COUNT(*) FROM periodic_analysis pa
-                         INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post = latest.id_post AND pa.id = latest.max_id
+                         INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post <=> latest.id_post AND pa.id = latest.max_id
                          $whereSql";
             $stmt = $db->prepare($countSql);
             $stmt->execute($params);
@@ -57,15 +58,21 @@ if ($method === 'GET') {
         // Dados paginados (usa índice idx_periodic_group_ordered para ORDER BY)
         $dataSql = "SELECT pa.*, d.url AS dominio_url
                     FROM periodic_analysis pa
-                    INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post = latest.id_post AND pa.id = latest.max_id
+                    INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post <=> latest.id_post AND pa.id = latest.max_id
                     LEFT JOIN domains d ON d.blog_name = pa.dominio
                     $whereSql
                     ORDER BY pa.created_at DESC, pa.id DESC
                     LIMIT ? OFFSET ?";
-        $params[] = $limit;
-        $params[] = $offset;
         $stmt = $db->prepare($dataSql);
-        $stmt->execute($params);
+        // LIMIT/OFFSET como PARAM_INT: com EMULATE_PREPARES=false o bind via
+        // execute($params) vai como string e o placeholder nativo de LIMIT exige int.
+        $bindIdx = 1;
+        foreach ($params as $p) {
+            $stmt->bindValue($bindIdx++, $p);
+        }
+        $stmt->bindValue($bindIdx++, $limit, PDO::PARAM_INT);
+        $stmt->bindValue($bindIdx++, $offset, PDO::PARAM_INT);
+        $stmt->execute();
         $rows = $stmt->fetchAll();
 
         // COMENTADO: with_history removido - usa history_batch no frontend (mais eficiente)
@@ -110,9 +117,12 @@ if ($method === 'GET') {
             $whereParts = [];
             $args = [];
             foreach ($groups as $g) {
-                $whereParts[] = '(dominio = ? AND id_post = ?)';
+                // <=> null-safe: '' vira NULL para casar com a coluna INT NULL.
+                $idPostBatch = $g['id_post'] ?? null;
+                if ($idPostBatch === '') $idPostBatch = null;
+                $whereParts[] = '(dominio = ? AND id_post <=> ?)';
                 $args[] = $g['dominio'] ?? '';
-                $args[] = $g['id_post'] ?? '';
+                $args[] = $idPostBatch;
             }
             $whereSql = implode(' OR ', $whereParts);
             
@@ -148,14 +158,15 @@ if ($method === 'GET') {
     if (isset($_GET['history']) && isset($_GET['dominio']) && isset($_GET['id_post'])) {
         $dominioH = trim($_GET['dominio']);
         $idPostH = trim($_GET['id_post']);
+        if ($idPostH === '') $idPostH = null; // coluna INT NULL: '' coagia para 0 no MySQL
         $stmt = $db->prepare(
             'SELECT id, created_at, status_compliance, resumo_analise
              FROM periodic_analysis
-             WHERE dominio = ? AND id_post = ?
+             WHERE dominio = ? AND id_post <=> ?
              ORDER BY created_at DESC, id DESC
              LIMIT 50'
         );
-        $stmt->execute([$dominioH ?: null, $idPostH]);
+        $stmt->execute([$dominioH, $idPostH]);
         jsonResponse(200, $stmt->fetchAll());
     }
 
@@ -181,23 +192,21 @@ if ($method === 'POST') {
             jsonResponse(400, ['error' => 'Máximo de 500 itens por vez']);
         }
 
-        // Timestamp São Paulo (UTC-3) — único para todo o lote
-        $tz = new DateTimeZone('America/Sao_Paulo');
-        $now = new DateTime('now', $tz);
-        $createdAt = $now->format('Y-m-d H:i:s');
-
+        // created_at propositalmente omitido: usa DEFAULT CURRENT_TIMESTAMP do banco,
+        // consistente com as linhas antigas (gerar no PHP em America/Sao_Paulo e inserir
+        // em coluna TIMESTAMP causava skew de ~3h conforme o time_zone da sessão).
         $stmt = $db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'publish_status'");
         $hasPublishStatus = (bool)$stmt->fetch();
 
         if ($hasPublishStatus) {
             $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, created_at, publish_status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
+                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, publish_status)
+                 VALUES (?, ?, ?, ?, ?, ?)'
             );
         } else {
             $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)'
+                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio)
+                 VALUES (?, ?, ?, ?, ?)'
             );
         }
 
@@ -214,9 +223,8 @@ if ($method === 'POST') {
                         $it['id_post'],
                         $it['post_type'],
                         'nao_analisado',
-                        'esperanndo re-analise',
+                        'esperando re-analise',
                         $it['dominio'],
-                        $createdAt,
                         $it['publish_status'] ?? 'draft'
                     ]);
                 } else {
@@ -224,9 +232,8 @@ if ($method === 'POST') {
                         $it['id_post'],
                         $it['post_type'],
                         'nao_analisado',
-                        'esperanndo re-analise',
-                        $it['dominio'],
-                        $createdAt
+                        'esperando re-analise',
+                        $it['dominio']
                     ]);
                 }
                 $ids[] = (int)$db->lastInsertId();
@@ -248,19 +255,17 @@ if ($method === 'POST') {
     }
 
     if ($action === 'reanalyze') {
-        // Validar campos obrigatórios
+        // Validar campos obrigatórios (sem "undefined array key" no PHP 8 se ausente;
+        // aceita 0/'0', rejeita ausente/null/'').
         $required = ['id_post', 'post_type', 'dominio'];
         foreach ($required as $field) {
-            if (empty($input[$field]) && $input[$field] !== '0') {
+            if (!array_key_exists($field, $input) || $input[$field] === null || $input[$field] === '') {
                 jsonResponse(400, ['error' => "Campo obrigatório: $field"]);
             }
         }
 
-        // Timestamp São Paulo (UTC-3)
-        $tz = new DateTimeZone('America/Sao_Paulo');
-        $now = new DateTime('now', $tz);
-        $createdAt = $now->format('Y-m-d H:i:s');
-
+        // created_at omitido de propósito: DEFAULT CURRENT_TIMESTAMP do banco
+        // (ver comentário no reanalyze_bulk sobre o skew de fuso).
         // Verificar se coluna publish_status existe na tabela
         $stmt = $db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'publish_status'");
         $hasPublishStatus = (bool)$stmt->fetch();
@@ -268,31 +273,29 @@ if ($method === 'POST') {
         if ($hasPublishStatus) {
             $publishStatus = $input['publish_status'] ?? 'draft';
             $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, created_at, publish_status)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)'
-            );
-            $stmt->execute([
-                $input['id_post'],
-                $input['post_type'],
-                'nao_analisado',
-                'esperanndo re-analise',
-                $input['dominio'],
-                $createdAt,
-                $publishStatus
-            ]);
-        } else {
-            // Fallback sem publish_status (coluna não existe no banco)
-            $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, created_at)
+                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, publish_status)
                  VALUES (?, ?, ?, ?, ?, ?)'
             );
             $stmt->execute([
                 $input['id_post'],
                 $input['post_type'],
                 'nao_analisado',
-                'esperanndo re-analise',
+                'esperando re-analise',
                 $input['dominio'],
-                $createdAt
+                $publishStatus
+            ]);
+        } else {
+            // Fallback sem publish_status (coluna não existe no banco)
+            $stmt = $db->prepare(
+                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio)
+                 VALUES (?, ?, ?, ?, ?)'
+            );
+            $stmt->execute([
+                $input['id_post'],
+                $input['post_type'],
+                'nao_analisado',
+                'esperando re-analise',
+                $input['dominio']
             ]);
         }
 

@@ -4,11 +4,14 @@
 // ============================================
 
 // --- CORS Headers ---
+// Mesmo-origem (o app usa fetch relativo "api/..."): cookies de sessão vão
+// automaticamente, sem precisar de ACA-Credentials. Não enviar
+// "Allow-Origin: *" junto com "Allow-Credentials: true" (combinação inválida
+// que o browser rejeita no EventSource/fetch com credenciais).
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
-header('Access-Control-Allow-Credentials: true');
 
 // Handle preflight
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {

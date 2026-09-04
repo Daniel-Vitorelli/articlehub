@@ -8,15 +8,18 @@
 require_once __DIR__ . '/config.php';
 
 // Requer estar logado (mesma sessão do polling)
+// Fecha a sessão ANTES do loop longo: sem isso o lock do arquivo de sessão
+// bloqueia todas as outras requisições do mesmo usuário por até 30s.
 $user = requireAuth();
+if (function_exists('session_write_close')) {
+    @session_write_close();
+}
 
 // Headers SSE
 header('Content-Type: text/event-stream');
 header('Cache-Control: no-cache');
 header('Connection: keep-alive');
 header('X-Accel-Buffering: no'); // desativa buffering nginx
-header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Credentials: true');
 
 // Evita timeout
 @set_time_limit(0);

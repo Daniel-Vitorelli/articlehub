@@ -47,7 +47,10 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.46";
+  const APP_VERSION = "1.4.47";
+  // Contador monotônico para ids temporários do update otimista (evita colisão
+  // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
+  let periodicTempIdSeq = 0;
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
@@ -1868,7 +1871,7 @@
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
     const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const tempId = -Date.now();
+    const tempId = -Date.now() * 1000 - (++periodicTempIdSeq);
     const newRow = {
       id: tempId,
       id_post: latest.id_post,
@@ -1892,12 +1895,14 @@
     // Memória: novo latest no grupo + antigo latest vira histórico local.
     const oldLatest = group.sorted[0];
     group.sorted.unshift(newRow);
+    let pushedHistory = false;
     if (periodicHistoryCache[key] !== undefined && oldLatest) {
       periodicHistoryCache[key].unshift({
         created_at: oldLatest.created_at,
         status_compliance: oldLatest.status_compliance,
         resumo_analise: oldLatest.resumo_analise || "",
       });
+      pushedHistory = true;
     }
     // All: nova posição no topo (é a análise mais recente do grupo).
     const allIdx = periodicAnalysisAll.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
@@ -1962,7 +1967,9 @@
     apiPost("periodic_analysis.php", payload)
       .then((res) => {
         if (!res || !res.success) throw new Error(res?.message || "Resposta inesperada do servidor.");
-        const gRow = group.sorted.find((r) => r.id === tempId);
+        // Busca pelo grupo VIVO (por key): um reload no meio pode ter trocado os objetos.
+        const liveGroup = periodicAnalysisGroups.find((gg) => gg.key === key);
+        const gRow = liveGroup ? liveGroup.sorted.find((r) => r.id === tempId) : null;
         if (gRow) gRow.id = res.id;
         const vRow = periodicAnalysisVisible.find((r) => r.id === tempId);
         if (vRow) vRow.id = res.id;
@@ -1970,6 +1977,28 @@
         if (aRow) aRow.id = res.id;
       })
       .catch((err) => {
+        // Rollback do otimista: remove a linha fantasma e restaura a anterior.
+        // Busca pelos arrays VIVOS (por tempId), pois um reload pode ter trocado os objetos.
+        const liveGroup = periodicAnalysisGroups.find((gg) => gg.key === key);
+        if (liveGroup) {
+          const gi = liveGroup.sorted.findIndex((r) => r.id === tempId);
+          if (gi !== -1) liveGroup.sorted.splice(gi, 1);
+        }
+        const ai2 = periodicAnalysisAll.findIndex((r) => r.id === tempId);
+        if (ai2 !== -1) periodicAnalysisAll.splice(ai2, 1);
+        const vi2 = periodicAnalysisVisible.findIndex((r) => r.id === tempId);
+        if (vi2 !== -1) periodicAnalysisVisible.splice(vi2, 1);
+        if (pushedHistory && periodicHistoryCache[key] !== undefined && periodicHistoryCache[key].length) {
+          periodicHistoryCache[key].shift();
+        }
+        // Restaura a linha anterior (se ainda não voltou via reload) e re-renderiza.
+        if (oldLatest) {
+          const hasKey = periodicAnalysisAll.some((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
+          if (!hasKey) {
+            periodicAnalysisAll.splice(Math.min(Math.max(allIdx, 0), periodicAnalysisAll.length), 0, oldLatest);
+          }
+        }
+        renderComplianceAnalysis({ preserveSelection: true });
         showToast("Erro ao criar análise: " + (err?.message || "erro desconhecido"), "error");
       });
   }
@@ -2013,6 +2042,8 @@
 
     const items = [];
     const tempIdByKey = new Map();
+    const processedKeys = []; // paralelo a items (só keys com latest válido)
+    const rollbackByKey = new Map(); // key -> { oldLatest, allIdx, visIdx, pushedHistory }
     const movedRows = []; // newRows que continuam na view → topo, na ordem da seleção
     const allNewRows = []; // todos os newRows (All não tem filtro)
 
@@ -2020,8 +2051,12 @@
       const g = groupsByKey.get(key);
       const latest = g ? g.sorted[0] : null;
       if (!latest) return;
-      const tempId = -Date.now() - idx;
+      const tempId = -Date.now() * 1000 - (++periodicTempIdSeq);
       tempIdByKey.set(key, tempId);
+      processedKeys.push(key);
+      // Guarda posição original para rollback em caso de falha do POST
+      const prevVisIdx = periodicAnalysisVisible.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === key);
+      rollbackByKey.set(key, { oldLatest: g.sorted[0], allIdx: -1, visIdx: prevVisIdx, pushedHistory: false });
       const newRow = {
         id: tempId,
         id_post: latest.id_post,
@@ -2049,6 +2084,8 @@
           status_compliance: oldLatest.status_compliance,
           resumo_analise: oldLatest.resumo_analise || "",
         });
+        const rb = rollbackByKey.get(key);
+        if (rb) rb.pushedHistory = true;
       }
 
       const matchesFilter =
@@ -2073,10 +2110,44 @@
 
     // All: tira antigas e põe as novas no topo (são as análises mais recentes).
     for (const nr of allNewRows) {
-      const ai = periodicAnalysisAll.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === `${nr.dominio}::${nr.id_post ?? ""}`);
+      const nrKey = `${nr.dominio}::${nr.id_post ?? ""}`;
+      const ai = periodicAnalysisAll.findIndex((r) => `${r.dominio}::${r.id_post ?? ""}` === nrKey);
+      const rb = rollbackByKey.get(nrKey);
+      if (rb) rb.allIdx = ai;
       if (ai !== -1) periodicAnalysisAll.splice(ai, 1);
     }
     if (allNewRows.length) periodicAnalysisAll.unshift(...allNewRows);
+
+    // Remove linha fantasma do lote (falha de POST) e restaura a anterior.
+    // Busca pelos arrays VIVOS (por tempId), pois um reload pode ter trocado os objetos.
+    function rollbackBulkKeys(failKeys) {
+      failKeys.forEach((k) => {
+        const tempId = tempIdByKey.get(k);
+        if (tempId == null) return;
+        const liveGroup = periodicAnalysisGroups.find((gg) => gg.key === k);
+        if (liveGroup) {
+          const gi = liveGroup.sorted.findIndex((r) => r.id === tempId);
+          if (gi !== -1) liveGroup.sorted.splice(gi, 1);
+        }
+        const ai2 = periodicAnalysisAll.findIndex((r) => r.id === tempId);
+        if (ai2 !== -1) periodicAnalysisAll.splice(ai2, 1);
+        const vi2 = periodicAnalysisVisible.findIndex((r) => r.id === tempId);
+        if (vi2 !== -1) periodicAnalysisVisible.splice(vi2, 1);
+        const rb = rollbackByKey.get(k);
+        if (rb) {
+          if (rb.pushedHistory && periodicHistoryCache[k] !== undefined && periodicHistoryCache[k].length) {
+            periodicHistoryCache[k].shift();
+          }
+          if (rb.oldLatest) {
+            const hasKey = periodicAnalysisAll.some((r) => `${r.dominio}::${r.id_post ?? ""}` === k);
+            if (!hasKey) {
+              periodicAnalysisAll.splice(Math.min(Math.max(rb.allIdx, 0), periodicAnalysisAll.length), 0, rb.oldLatest);
+            }
+          }
+        }
+      });
+      renderComplianceAnalysis({ preserveSelection: true });
+    }
 
     // Visible + DOM: bloco das reanalisadas no topo + scroll até a primeira.
     if (movedRows.length) periodicAnalysisVisible.unshift(...movedRows);
@@ -2111,15 +2182,16 @@
       .then((res) => {
         if (!res || !res.success) throw new Error(res?.message || "Falha");
         const ids = Array.isArray(res.ids) ? res.ids : [];
-        const resKeys = Array.isArray(res.keys) ? res.keys : keys;
+        const resKeys = Array.isArray(res.keys) ? res.keys : processedKeys;
         resKeys.forEach((k, i) => {
           const realId = ids[i];
           if (!realId) return;
           const tempId = tempIdByKey.get(k);
           if (tempId == null) return;
-          const grp = groupsByKey.get(k);
-          if (grp) {
-            const row = grp.sorted.find((r) => r.id === tempId);
+          // Grupo VIVO (por key): um reload no meio pode ter trocado os objetos.
+          const liveGroup = periodicAnalysisGroups.find((gg) => gg.key === k);
+          if (liveGroup) {
+            const row = liveGroup.sorted.find((r) => r.id === tempId);
             if (row) row.id = realId;
           }
           const vRow = periodicAnalysisVisible.find((r) => r.id === tempId);
@@ -2130,16 +2202,37 @@
       })
       .catch(() => {
         // Fallback silencioso p/ backends sem o endpoint bulk: 1 POST por item, sem travar UI.
+        // Mapeia o id real de cada sucesso (antes descartava) e faz rollback só das falhas.
         (async () => {
-          let failCount = 0;
-          for (const it of items) {
+          const failKeys = [];
+          for (let fi = 0; fi < items.length; fi++) {
+            const it = items[fi];
+            const fkey = processedKeys[fi];
+            const ftemp = tempIdByKey.get(fkey);
             try {
-              await apiPost("periodic_analysis.php", { action: "reanalyze", ...it });
+              const res = await apiPost("periodic_analysis.php", { action: "reanalyze", ...it });
+              const realId = res && res.id;
+              if (realId && ftemp != null) {
+                const liveGroup = periodicAnalysisGroups.find((gg) => gg.key === fkey);
+                if (liveGroup) {
+                  const row = liveGroup.sorted.find((r) => r.id === ftemp);
+                  if (row) row.id = realId;
+                }
+                const vRow = periodicAnalysisVisible.find((r) => r.id === ftemp);
+                if (vRow) vRow.id = realId;
+                const aRow = periodicAnalysisAll.find((r) => r.id === ftemp);
+                if (aRow) aRow.id = realId;
+              } else if (fkey) {
+                failKeys.push(fkey);
+              }
             } catch (e) {
-              failCount++;
+              if (fkey) failKeys.push(fkey);
             }
           }
-          if (failCount) showToast(`Falha ao reanalisar: ${failCount} erro(s).`, "error");
+          if (failKeys.length) {
+            rollbackBulkKeys(failKeys);
+            showToast(`Falha ao reanalisar: ${failKeys.length} erro(s).`, "error");
+          }
         })();
       });
   }
