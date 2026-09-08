@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.4.49";
+  const APP_VERSION = "1.5.0";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -2102,15 +2102,21 @@
     const bulkCount = $("#bulkCount");
     if (bulkCount) bulkCount.textContent = count;
     if (bulkBtn) bulkBtn.style.display = count > 0 ? "" : "none";
-    // "Todas" só existe para desmarcar: escondido sem seleção, visível com seleção.
+    // "Todas" sempre visível quando há linhas: desmarcado = selecionar tudo
+    // (com confirmação), marcado/indeterminado = desmarcar tudo (instantâneo).
     const selWrap = $("#periodicSelectAllWrap");
-    if (selWrap) selWrap.style.display = count > 0 ? "flex" : "none";
+    const total = periodicAnalysisVisible.length;
+    if (selWrap) selWrap.style.display = total > 0 ? "flex" : "none";
     const selAll = $("#periodicSelectAll");
-    if (selAll && count > 0) {
-      const total = periodicAnalysisVisible.length;
-      const allOn = total > 0 && selectedPeriodicKeys.size >= total;
+    if (selAll) {
+      const allOn = total > 0 && count >= total;
       selAll.checked = allOn;
-      selAll.indeterminate = !allOn;
+      selAll.indeterminate = count > 0 && !allOn;
+      selAll.title = allOn
+        ? "Desmarcar todas"
+        : count > 0
+          ? "Desmarcar seleção (clique de novo para selecionar todas)"
+          : `Selecionar todas (${total})`;
     }
   }
 
@@ -2625,21 +2631,66 @@
   const selectAll = $("#periodicSelectAll");
   if (selectAll)
     selectAll.addEventListener("change", (e) => {
-      // Só aparece quando já há seleção: serve apenas para desmarcar tudo.
-      selectedPeriodicKeys.clear();
-      // Sincroniza checkboxes e linhas já renderizadas no DOM.
-      // Linha desmarcada também perde o foco (is-focused).
+      const total = periodicAnalysisVisible.length;
+      const countBefore = selectedPeriodicKeys.size;
+      const allOnBefore = total > 0 && countBefore >= total;
+
+      function clearPeriodicSelection() {
+        selectedPeriodicKeys.clear();
+        // Sincroniza checkboxes e linhas já renderizadas no DOM.
+        // Linha desmarcada também perde o foco (is-focused).
+        document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
+          const tr = cb.closest("tr");
+          const wasOn = cb.checked;
+          cb.checked = false;
+          if (tr) {
+            tr.classList.remove("is-selected");
+            if (wasOn) tr.classList.remove("is-focused");
+          }
+        });
+        updateBulkUI();
+        e.target.indeterminate = false;
+      }
+
+      if (!e.target.checked) {
+        // Desmarcar tudo: instantâneo, sem confirmação.
+        clearPeriodicSelection();
+        return;
+      }
+
+      // Chegou aqui com checked=true. Se veio de seleção parcial
+      // (indeterminado), interpreta como "desmarcar rápido" (padrão Gmail):
+      // 1 clique limpa, o próximo (partindo do zero) seleciona com confirmação.
+      if (countBefore > 0 && !allOnBefore) {
+        e.target.checked = false;
+        clearPeriodicSelection();
+        return;
+      }
+
+      // Selecionar todas: exige confirmação (pode ser uma lista grande).
+      if (!total) {
+        e.target.checked = false;
+        return;
+      }
+      if (
+        !confirm(
+          `Selecionar todas as ${total} análises filtradas para reanálise em massa?`,
+        )
+      ) {
+        e.target.checked = false;
+        e.target.indeterminate = false;
+        updateBulkUI();
+        return;
+      }
+      periodicAnalysisVisible.forEach((r) => {
+        selectedPeriodicKeys.add(`${r.dominio}::${r.id_post ?? ""}`);
+      });
       document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
+        cb.checked = true;
         const tr = cb.closest("tr");
-        const wasOn = cb.checked;
-        cb.checked = false;
-        if (tr) {
-          tr.classList.remove("is-selected");
-          if (wasOn) tr.classList.remove("is-focused");
-        }
+        if (tr) tr.classList.add("is-selected");
       });
       updateBulkUI();
-      e.target.indeterminate = false;
     });
   const periodicBodyForCheck = document.getElementById("periodicAnalysisBody");
   if (periodicBodyForCheck) {
@@ -4356,6 +4407,9 @@
     if (periodicAnalysisAll.length === 0) {
       tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
       $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
+      if (!opts.preserveSelection) selectedPeriodicKeys.clear();
+      periodicAnalysisVisible = [];
+      updateBulkUI();
       return;
     }
 
@@ -4383,6 +4437,7 @@
       if (!periodicAnalysisVisible.length) {
         tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
+        updateBulkUI();
         return;
       }
 
