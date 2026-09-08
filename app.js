@@ -47,7 +47,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.5.0";
+  const APP_VERSION = "1.5.1";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -2275,6 +2275,37 @@
       }
     }
     updatePeriodicInfo();
+    // Paridade com a reanálise individual: avisa quando itens saem do filtro
+    // atual (ex: estava vendo só "reprovados" e viraram "nao_analisado") e
+    // preenche os buracos com os próximos ainda não renderizados.
+    const hiddenCount = allNewRows.length - movedRows.length;
+    if (hiddenCount > 0) {
+      if (tbody && periodicAnalysisLoaded < periodicAnalysisVisible.length) {
+        const fillCount = Math.min(hiddenCount, periodicAnalysisVisible.length - periodicAnalysisLoaded);
+        if (fillCount > 0) {
+          const fillHolder = document.createElement("tbody");
+          fillHolder.innerHTML = periodicAnalysisVisible
+            .slice(periodicAnalysisLoaded, periodicAnalysisLoaded + fillCount)
+            .map(periodicRowHtml)
+            .join("");
+          const fragFill = document.createDocumentFragment();
+          while (fillHolder.firstChild) fragFill.appendChild(fillHolder.firstChild);
+          const sentinelEl = document.getElementById("periodicScrollSentinel");
+          tbody.insertBefore(fragFill, sentinelEl || null);
+          periodicAnalysisLoaded += fillCount;
+          updatePeriodicInfo();
+        }
+      }
+      const totalRe = allNewRows.length;
+      showToast(
+        hiddenCount === 1 && totalRe === 1
+          ? "Análise reenviada — o item saiu do filtro atual."
+          : hiddenCount >= totalRe
+            ? `Todas as ${totalRe} análises reenviadas saíram do filtro atual.`
+            : `${totalRe} análises reenviadas — ${hiddenCount} saíram do filtro atual.`,
+        "success",
+      );
+    }
     if (tbody) {
       if (periodicAnalysisLoaded < periodicAnalysisVisible.length || periodicPrefetchOffset !== -1) {
         insertSentinel(tbody);
