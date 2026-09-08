@@ -34,6 +34,7 @@ articlehub/
 │   ├── logs.php        # Logs de request_history por data
 │   ├── compliance.php  # Histórico compliance por request
 │   ├── periodic_analysis.php # Periódica com paginação LIMIT/OFFSET + distinct + history
+│   ├── settings.php    # Configurações globais (GET auth, PUT admin) — ex: bulk_confirm_threshold
 │   └── preferences.php # PUT tema (GET é via auth.php)
 ├── database/
 │   └── schema.sql      # Schema completo + seed + índices lazy (~500 linhas)
@@ -152,6 +153,7 @@ pending → in-progress → review → done → published → revisado
 | `compliance.php` | GET `?request_id` | `ch.id, status, resumo` | Lazy em `toggleComplianceHistory` |
 | `periodic_analysis.php` | GET `?limit&offset&status&post_type&dominio` / `?distinct=dominio/post_type` / `?history=1&dominio&id_post` | Agrupado `MAX(id) GROUP BY dominio,id_post` paginado, total `COUNT(*)` | ✅ Infinite scroll |
 | `preferences.php` | PUT | `theme` toggle (GET morto, via `auth.php`) | — |
+| `settings.php` | GET (auth) / PUT (admin) | chave/valor global (`bulk_confirm_threshold` 1–10000, tabela `app_settings` auto-criada) | ✅ objeto `{}` |
 | `auth.php` | POST login/logout, GET check | Retorna `preferences` junto | — |
 
 ---

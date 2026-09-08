@@ -85,6 +85,17 @@ CREATE TABLE IF NOT EXISTS niches (
 
 
 -- ============================================
+-- TABELA: app_settings
+-- Configurações globais editáveis pelo admin (chave/valor)
+-- ============================================
+CREATE TABLE IF NOT EXISTS app_settings (
+  `key`        VARCHAR(100)    NOT NULL PRIMARY KEY,
+  `value`      TEXT            NOT NULL,
+  updated_at   TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================
 -- TABELA: requests
 -- Solicitações de artigos (tabela central)
 -- ============================================
@@ -350,6 +361,14 @@ ON DUPLICATE KEY UPDATE name=VALUES(name);
 
 
 -- ============================================
+-- DADOS INICIAIS: Configurações globais
+-- ============================================
+INSERT INTO app_settings (`key`, `value`) VALUES
+  ('bulk_confirm_threshold', '10')
+ON DUPLICATE KEY UPDATE `value`=`value`;
+
+
+-- ============================================
 -- DADOS INICIAIS: Solicitações (seed mínimo)
 -- ============================================
 INSERT INTO requests (id, keyword, domain_id, writer_id, requested_by_id, status, priority, wordcount, deadline, instructions, created_at) VALUES
@@ -412,6 +431,15 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 
 -- periodic_analysis.publish_status (pode não existir em dumps antigos)
 -- ALTER TABLE periodic_analysis ADD COLUMN publish_status VARCHAR(20) DEFAULT 'draft';
+
+-- app_settings (criada automaticamente pela api/settings.php no primeiro GET/PUT;
+-- script manual equivalente à definição da tabela no topo deste arquivo)
+-- CREATE TABLE IF NOT EXISTS app_settings (
+--   `key` VARCHAR(100) NOT NULL PRIMARY KEY,
+--   `value` TEXT NOT NULL,
+--   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('bulk_confirm_threshold', '10');
 
 -- Índices para performance (lazy load) - execute se ainda não existirem
 -- CREATE INDEX idx_periodic_dominio ON periodic_analysis (dominio);

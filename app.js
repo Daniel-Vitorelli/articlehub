@@ -17,6 +17,8 @@
   let niches = [];
   let notifications = [];
   let messages = [];
+  let appSettings = {}; // configurações globais (api/settings.php) — ex: bulk_confirm_threshold
+  const BULK_CONFIRM_THRESHOLD_DEFAULT = 10;
   let currentUser = null;
   let currentMsgTab = "inbox";
   let pollInterval = null;
@@ -47,7 +49,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.5.1";
+  const APP_VERSION = "1.5.2";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -228,7 +230,7 @@
       // porque os dados (inclusive resumo_analise/instructions/histórico) já estão em memória.
       // Só a IMAGEM (BLOB binário) continua lazy por registro.
       // A análise periódica é pré-carregada em background logo após (showApp → preloadPeriodicInBackground).
-      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, compHistData] = await Promise.all([
+      const [reqData, notifData, domData, langData, nicheData, userData, delData, histData, compHistData, settingsData] = await Promise.all([
         apiGet("requests.php"),
         apiGet("notifications.php"),
         apiGet("domains.php"),
@@ -238,6 +240,7 @@
         apiGet("requests.php?action=deleted"),
         apiGet("requests.php?action=history_all").catch(() => []),
         apiGet("compliance.php?action=history_all").catch(() => []),
+        apiGet("settings.php").catch(() => ({})),
       ]);
       requests = reqData;
       notifications = notifData;
@@ -250,6 +253,8 @@
       requestHistoryCache = buildHistoryCache(histData);
       // Histórico de compliance em cache para modal instantâneo
       complianceHistoryCache = buildHistoryCache(compHistData);
+      // Configurações globais (limiar de confirmação do bulk, etc.)
+      appSettings = settingsData && !Array.isArray(settingsData) ? settingsData : {};
       // Análise periódica: pré-carregada em background (showApp → preloadPeriodicInBackground)
       // para estar pronta quando o usuário abrir a view de compliance-analysis.
     } catch (e) {
@@ -557,6 +562,7 @@
     if (["domains"].includes(viewName) && domains.length === 0) needs.push(apiGet("domains.php").then(d => domains = d));
     if (["languages"].includes(viewName) && languages.length === 0) needs.push(apiGet("languages.php").then(d => languages = d));
     if (["niches"].includes(viewName) && niches.length === 0) needs.push(apiGet("niches.php").then(d => niches = d));
+    if (["settings"].includes(viewName) && Object.keys(appSettings).length === 0) needs.push(apiGet("settings.php").then(d => { appSettings = Array.isArray(d) ? {} : d; }).catch(() => {}));
     if (["trash"].includes(viewName) && deletedRequests.length === 0) needs.push(apiGet("requests.php?action=deleted").then(d => deletedRequests = d));
     if (needs.length) await Promise.all(needs);
   }
@@ -935,6 +941,7 @@
       domains: "Domínios / Blogs",
       languages: "Idiomas",
       niches: "Nichos",
+      settings: "Configurações",
       messages: "Mensagens",
       logs: "Logs de Status",
       "compliance-analysis": "Análise Periódica de Compliance",
@@ -950,6 +957,7 @@
     if (viewName === "domains") renderDomains();
     if (viewName === "languages") renderLanguages();
     if (viewName === "niches") renderNiches();
+    if (viewName === "settings") renderSettings();
     if (viewName === "messages") renderMessages();
     if (viewName === "logs") renderLogs();
     if (viewName === "trash") renderTrash();
@@ -2124,7 +2132,19 @@
     if (selectedPeriodicKeys.size === 0) return;
     const keys = Array.from(selectedPeriodicKeys);
 
-    // INSTANTÂNEO: limpa seleção primeiro — sem confirm, sem spinner, sem travar botão.
+    // Acima do limiar configurado pelo admin exige confirmação
+    // (evita reanálise em massa acidental).
+    const bulkThreshold = bulkConfirmThreshold();
+    if (
+      keys.length > bulkThreshold &&
+      !confirm(
+        `Reanalisar ${keys.length} análises de uma vez? Esta ação envia todas para reanálise.`,
+      )
+    ) {
+      return;
+    }
+
+    // INSTANTÂNEO: limpa seleção primeiro — sem spinner, sem travar botão.
     // Update otimista move as linhas ao topo (nova posição) e o POST vai em background.
     selectedPeriodicKeys.clear();
     updateBulkUI();
@@ -4042,6 +4062,45 @@
   }
 
   // ============================================
+  //  SETTINGS VIEW (ADMIN)
+  // ============================================
+  // Limiar de itens selecionados acima do qual a reanálise em massa
+  // pede confirmação. Editável pelo admin (view Configurações).
+  function bulkConfirmThreshold() {
+    const raw = appSettings ? appSettings.bulk_confirm_threshold : null;
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 1) return BULK_CONFIRM_THRESHOLD_DEFAULT;
+    return Math.min(n, 10000);
+  }
+
+  function renderSettings() {
+    if (!is("admin")) return;
+    const input = $("#settingBulkThreshold");
+    if (input) input.value = bulkConfirmThreshold();
+  }
+
+  async function saveSettings() {
+    if (!is("admin")) return;
+    const input = $("#settingBulkThreshold");
+    const n = parseInt(input ? input.value : "", 10);
+    if (!Number.isFinite(n) || n < 1 || n > 10000) {
+      alert("Informe um valor inteiro entre 1 e 10000.");
+      return;
+    }
+    const btn = $("#btnSaveSettings");
+    if (btn) btn.disabled = true;
+    try {
+      const res = await apiPut("settings.php", { key: "bulk_confirm_threshold", value: n });
+      appSettings.bulk_confirm_threshold = String(res && res.value != null ? res.value : n);
+      showToast("Configuração salva.", "success");
+    } catch (err) {
+      alert("Erro ao salvar: " + err.message);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  // ============================================
   //  NOTIFICATIONS
   // ============================================
   function updateNotifBadge() {
@@ -4648,6 +4707,7 @@
     if (view === "users") renderUsers();
     if (view === "domains") renderDomains();
     if (view === "messages") renderMessages();
+    if (view === "settings") renderSettings();
     if (view === "compliance-analysis") renderComplianceAnalysis();
   }
 
@@ -4807,6 +4867,12 @@
     $("#btnSubmitNiche").addEventListener("click", (e) => {
       e.preventDefault();
       submitNiche();
+    });
+
+    // Settings (admin)
+    $("#btnSaveSettings").addEventListener("click", (e) => {
+      e.preventDefault();
+      saveSettings();
     });
 
     // Notification bell

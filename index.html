@@ -116,6 +116,10 @@
             <span class="nav-icon">🔎</span>
             Análise Periódica
           </a>
+          <a href="#" class="nav-link" data-view="settings">
+            <span class="nav-icon">⚙️</span>
+            Configurações
+          </a>
         </div>
 
         <div class="nav-section">
@@ -493,6 +497,31 @@
               </thead>
               <tbody id="nichesTableBody"></tbody>
             </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: CONFIGURAÇÕES (ADMIN) ===== -->
+      <div class="view-panel" id="viewSettings">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>Configurações</h3>
+              <div class="table-actions">
+                <button class="btn-primary" id="btnSaveSettings">
+                  <span>💾</span> Salvar
+                </button>
+              </div>
+            </div>
+            <div style="padding:20px 24px;">
+              <div class="form-group" style="max-width:420px;">
+                <label for="settingBulkThreshold">Confirmar reanálise em massa acima de (itens)</label>
+                <input type="number" class="form-input" id="settingBulkThreshold" min="1" max="10000" step="1" value="10" style="max-width:160px;">
+                <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
+                  Ao clicar em "Analisar Selecionados" com mais itens que esse valor, o sistema pede confirmação antes de enviar.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
