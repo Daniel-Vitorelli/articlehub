@@ -29,7 +29,7 @@ function settingRules(): array
 {
     return [
         'bulk_confirm_threshold' => ['type' => 'int', 'min' => 1, 'max' => 10000],
-        'session_lifetime' => ['type' => 'int', 'min' => 300, 'max' => 2592000], // 5 min a 30 dias, em segundos
+        'session_lifetime' => ['type' => 'int', 'min' => 300, 'max' => 31536000], // 5 min a 365 dias, em segundos
     ];
 }
 

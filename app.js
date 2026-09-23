@@ -49,7 +49,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.5.2";
+  const APP_VERSION = "1.5.3";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -4082,7 +4082,7 @@
       const raw = appSettings ? appSettings.session_lifetime : null;
       const secs = parseInt(raw, 10);
       const days = Number.isFinite(secs) && secs >= 300 ? Math.round(secs / 86400) : 5;
-      sess.value = Math.min(days, 30);
+      sess.value = Math.min(days, 365);
     }
   }
 
@@ -4102,8 +4102,8 @@
 
       const sessInput = $("#settingSessionLifetime");
       const days = parseInt(sessInput ? sessInput.value : "", 10);
-      if (!Number.isFinite(days) || days < 1 || days > 30) {
-        alert("Informe a duração da sessão entre 1 e 30 dias.");
+      if (!Number.isFinite(days) || days < 1 || days > 365) {
+        alert("Informe a duração da sessão entre 1 e 365 dias.");
         return;
       }
       const res2 = await apiPut("settings.php", { key: "session_lifetime", value: days * 86400 });

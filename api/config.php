@@ -48,7 +48,7 @@ function sessionLifetime(): int
         $val = $stmt->fetchColumn();
         if ($val !== false && is_numeric($val)) {
             $n = (int)$val;
-            if ($n >= 300 && $n <= 2592000) return $n;
+            if ($n >= 300 && $n <= 31536000) return $n;
         }
     }
     catch (PDOException $e) {
