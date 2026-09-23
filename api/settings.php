@@ -21,6 +21,7 @@ function ensureSettingsTable(): void
     // Seed do limiar de confirmação da reanálise em massa (não sobrescreve valor existente)
     $stmt = $db->prepare('INSERT IGNORE INTO app_settings (`key`, `value`) VALUES (?, ?)');
     $stmt->execute(['bulk_confirm_threshold', '10']);
+    $stmt->execute(['session_lifetime', '432000']); // 5 dias
 }
 
 // Chaves editáveis + validadores (tipo, min, max)
@@ -28,6 +29,7 @@ function settingRules(): array
 {
     return [
         'bulk_confirm_threshold' => ['type' => 'int', 'min' => 1, 'max' => 10000],
+        'session_lifetime' => ['type' => 'int', 'min' => 300, 'max' => 2592000], // 5 min a 30 dias, em segundos
     ];
 }
 

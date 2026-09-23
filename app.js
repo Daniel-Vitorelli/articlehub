@@ -4077,21 +4077,38 @@
     if (!is("admin")) return;
     const input = $("#settingBulkThreshold");
     if (input) input.value = bulkConfirmThreshold();
+    const sess = $("#settingSessionLifetime");
+    if (sess) {
+      const raw = appSettings ? appSettings.session_lifetime : null;
+      const secs = parseInt(raw, 10);
+      const days = Number.isFinite(secs) && secs >= 300 ? Math.round(secs / 86400) : 5;
+      sess.value = Math.min(days, 30);
+    }
   }
 
   async function saveSettings() {
     if (!is("admin")) return;
-    const input = $("#settingBulkThreshold");
-    const n = parseInt(input ? input.value : "", 10);
-    if (!Number.isFinite(n) || n < 1 || n > 10000) {
-      alert("Informe um valor inteiro entre 1 e 10000.");
-      return;
-    }
     const btn = $("#btnSaveSettings");
     if (btn) btn.disabled = true;
     try {
+      const thresholdInput = $("#settingBulkThreshold");
+      const n = parseInt(thresholdInput ? thresholdInput.value : "", 10);
+      if (!Number.isFinite(n) || n < 1 || n > 10000) {
+        alert("Informe um valor inteiro entre 1 e 10000.");
+        return;
+      }
       const res = await apiPut("settings.php", { key: "bulk_confirm_threshold", value: n });
       appSettings.bulk_confirm_threshold = String(res && res.value != null ? res.value : n);
+
+      const sessInput = $("#settingSessionLifetime");
+      const days = parseInt(sessInput ? sessInput.value : "", 10);
+      if (!Number.isFinite(days) || days < 1 || days > 30) {
+        alert("Informe a duração da sessão entre 1 e 30 dias.");
+        return;
+      }
+      const res2 = await apiPut("settings.php", { key: "session_lifetime", value: days * 86400 });
+      appSettings.session_lifetime = String(res2 && res2.value != null ? res2.value : days * 86400);
+
       showToast("Configuração salva.", "success");
     } catch (err) {
       alert("Erro ao salvar: " + err.message);

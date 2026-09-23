@@ -41,15 +41,6 @@
           <span>🔐</span> Entrar
         </button>
       </form>
-      <div class="login-hint">
-        <p><strong>Acessos de demonstração:</strong></p>
-        <div class="hint-credentials">
-          <span>Admin: admin@hub.com / admin123</span>
-          <span>Gestor: fernando@hub.com / gestor123</span>
-          <span>Revisor: revisor@hub.com / revisor123</span>
-          <span>Redator: ana@hub.com / redator123</span>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -519,6 +510,13 @@
                 <input type="number" class="form-input" id="settingBulkThreshold" min="1" max="10000" step="1" value="10" style="max-width:160px;">
                 <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
                   Ao clicar em "Analisar Selecionados" com mais itens que esse valor, o sistema pede confirmação antes de enviar.
+                </p>
+              </div>
+              <div class="form-group" style="max-width:420px; margin-top:8px;">
+                <label for="settingSessionLifetime">Duração da sessão de login (dias)</label>
+                <input type="number" class="form-input" id="settingSessionLifetime" min="1" max="30" step="1" value="5" style="max-width:160px;">
+                <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
+                  Define por quantos dias o usuário permanece logado. O novo valor vale para as próximas sessões (entre 1 e 30 dias).
                 </p>
               </div>
             </div>

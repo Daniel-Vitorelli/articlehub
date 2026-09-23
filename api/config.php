@@ -19,12 +19,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// --- Session ---
-session_start([
-    'cookie_lifetime' => 432000, // 5 dias
-    'gc_maxlifetime' => 432000,
-]);
-
 // --- Environment Configuration ---
 // Lê a variável de ambiente do Docker (APP_ENV). Se não existir, assume 'prod' por segurança.
 $env = getenv('APP_ENV') ?: 'prod';
@@ -42,6 +36,32 @@ if ($env === 'dev') {
     define('DB_USER', getenv('DB_USER') ?: 'usr_articlehub');
     define('DB_PASS', getenv('DB_PASS') ?: 'Z9bnWlyAp[PK59sY');
 }
+
+// --- Session ---
+// Lê a duração da sessão configurável pelo admin (app_settings.session_lifetime).
+// Se a tabela ainda não existir ou o valor for inválido, usa o padrão de 5 dias.
+function sessionLifetime(): int
+{
+    $default = 432000; // 5 dias
+    try {
+        $stmt = getDB()->query("SELECT `value` FROM app_settings WHERE `key` = 'session_lifetime'");
+        $val = $stmt->fetchColumn();
+        if ($val !== false && is_numeric($val)) {
+            $n = (int)$val;
+            if ($n >= 300 && $n <= 2592000) return $n;
+        }
+    }
+    catch (PDOException $e) {
+        // Tabela ainda não criada — usa o padrão.
+    }
+    return $default;
+}
+
+$sessionLifetime = sessionLifetime();
+session_start([
+    'cookie_lifetime' => $sessionLifetime,
+    'gc_maxlifetime' => $sessionLifetime,
+]);
 
 function getDB(): PDO
 {
