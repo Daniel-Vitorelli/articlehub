@@ -523,8 +523,11 @@ function updateStatus(): void
             }
         }
         // Save WP edit URL
-        $stmt = $db->prepare('UPDATE requests SET status = ?, wp_edit_url = ?, status_compliance = "nao_analisado" WHERE id = ?');
-        $stmt->execute([$newStatus, $wpEditUrl, $id]);
+        // Ao marcar como Concluído, além de resetar o compliance, registra que
+        // esta é a PRIMEIRA análise (solicitacao_compliance) e QUEM a solicitou
+        // (solicitante_compliance = nome do usuário logado).
+        $stmt = $db->prepare('UPDATE requests SET status = ?, wp_edit_url = ?, status_compliance = "nao_analisado", solicitacao_compliance = "primeira_analise", solicitante_compliance = ? WHERE id = ?');
+        $stmt->execute([$newStatus, $wpEditUrl, $user['name'], $id]);
     }
     else {
         $stmt = $db->prepare('UPDATE requests SET status = ? WHERE id = ?');
@@ -846,8 +849,10 @@ function resetCompliance(): void
         jsonResponse(403, ['error' => 'Sem permissão para redefinir compliance.']);
     }
 
-    $stmt = $db->prepare('UPDATE requests SET status_compliance = "nao_analisado", resumo_analise = NULL WHERE id = ?');
-    $stmt->execute([$id]);
+    // Ao reanalisar, registra em solicitacao_compliance que houve re-análise
+    // e em solicitante_compliance QUEM clicou em reanalisar (nome do usuário logado).
+    $stmt = $db->prepare('UPDATE requests SET status_compliance = "nao_analisado", resumo_analise = NULL, solicitacao_compliance = "re-analise", solicitante_compliance = ? WHERE id = ?');
+    $stmt->execute([$user['name'], $id]);
 
     jsonResponse(200, ['message' => 'Compliance redefinida.']);
 }

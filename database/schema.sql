@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS requests (
   published_url      VARCHAR(500)    NULL     COMMENT 'URL do artigo publicado',
   wp_edit_url        VARCHAR(500)    NULL     COMMENT 'URL de edição do WordPress',
   status_compliance  VARCHAR(15)     NULL     COMMENT 'Análise de compliance: nao_analisado, aprovado, reprovado, revisar, falha',
+  solicitacao_compliance VARCHAR(20) NULL     COMMENT 'Tipo da solicitação de análise: primeira_analise, re-analise',
+  solicitante_compliance VARCHAR(150) NULL    COMMENT 'Nome de quem solicitou a análise de compliance',
   resumo_analise     TEXT            NULL     COMMENT 'Resumo feito pela análise de compliance',
   imagem             MEDIUMBLOB      NULL     COMMENT 'Imagem em binário (lazy: só via ?action=image)',
   imagem_nome        VARCHAR(255)    NULL     COMMENT 'Nome original do arquivo de imagem',
@@ -428,6 +430,12 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 -- requests.imagem + imagem_nome (lazy load via ?action=image)
 -- ALTER TABLE requests ADD COLUMN imagem MEDIUMBLOB NULL COMMENT 'Imagem binária';
 -- ALTER TABLE requests ADD COLUMN imagem_nome VARCHAR(255) NULL COMMENT 'Nome original do arquivo';
+
+-- requests.solicitacao_compliance (tipo da solicitação de análise: primeira_analise / re-analise)
+-- ALTER TABLE requests ADD COLUMN solicitacao_compliance VARCHAR(20) NULL COMMENT 'primeira_analise ou re-analise';
+
+-- requests.solicitante_compliance (nome de quem solicitou a análise de compliance)
+-- ALTER TABLE requests ADD COLUMN solicitante_compliance VARCHAR(150) NULL COMMENT 'Nome de quem solicitou a análise';
 
 -- periodic_analysis.publish_status (pode não existir em dumps antigos)
 -- ALTER TABLE periodic_analysis ADD COLUMN publish_status VARCHAR(20) DEFAULT 'draft';
