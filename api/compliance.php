@@ -27,7 +27,8 @@ if ($action === 'history_all') {
         $params = [$user['id'], $user['id']];
     }
     $stmt = $db->prepare(
-        "SELECT ch.id, ch.request_id, ch.status_compliance, ch.resumo_analise, ch.created_at
+        "SELECT ch.id, ch.request_id, ch.status_compliance, ch.resumo_analise,
+                ch.solicitacao_compliance, ch.solicitante_compliance, ch.created_at
          FROM compliance_history ch
          INNER JOIN requests r ON r.id = ch.request_id
          WHERE {$where}
@@ -54,7 +55,8 @@ if (!$allowed) {
     jsonResponse(403, ['error' => 'Sem permissão para ver este histórico.']);
 }
 
-$stmt = $db->prepare('SELECT ch.id, ch.request_id, ch.status_compliance, ch.resumo_analise, ch.created_at
+$stmt = $db->prepare('SELECT ch.id, ch.request_id, ch.status_compliance, ch.resumo_analise,
+                             ch.solicitacao_compliance, ch.solicitante_compliance, ch.created_at
                       FROM compliance_history ch
                       WHERE ch.request_id = ?
                       ORDER BY ch.created_at DESC');

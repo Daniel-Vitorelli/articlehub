@@ -1304,6 +1304,39 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   color: var(--accent-primary);
 }
 
+/* --- Solicitação / solicitante da análise de compliance ---
+   Linha discreta: não altera o layout, só adiciona uma meta-linha fina. */
+.compliance-req-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+.compliance-req-pill {
+  display: inline-block;
+  padding: 2px 9px;
+  border-radius: 20px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.compliance-req-first {
+  background: rgba(127, 90, 240, 0.12);
+  color: var(--accent-primary);
+}
+.compliance-req-re {
+  background: rgba(57, 160, 237, 0.12);
+  color: var(--accent-info);
+}
+.compliance-req-who {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
 /* Corpo rico do resumo: listas, links, código, ênfase e espaçamento */
 #complianceResumo ul,
 #complianceResumo ol,

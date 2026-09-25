@@ -49,7 +49,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.0";
+  const APP_VERSION = "1.6.1";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -1681,6 +1681,35 @@
     return html || '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
   }
 
+  // ============================================
+  //  COMPLIANCE — SOLICITAÇÃO / SOLICITANTE
+  // ============================================
+  // Rótulo amigável para o tipo da solicitação de análise
+  function complianceRequestLabel(value) {
+    const v = String(value || "").trim().toLowerCase();
+    if (v === "primeira_analise" || v === "primeira analise") return "Primeira análise";
+    if (v === "re-analise" || v === "re analise" || v === "reanalise") return "Re-análise";
+    return "";
+  }
+
+  // Linha discreta com tipo da solicitação + solicitante.
+  // Retorna "" quando não há nada para mostrar (não polui o layout).
+  function complianceRequestInfo(item) {
+    if (!item) return "";
+    const label = complianceRequestLabel(item.solicitacao_compliance);
+    const quem = String(item.solicitante_compliance || "").trim();
+    if (!label && !quem) return "";
+    let html = "";
+    if (label) {
+      const tone = label === "Re-análise" ? "re" : "first";
+      html += `<span class="compliance-req-pill compliance-req-${tone}">${escapeHtml(label)}</span>`;
+    }
+    if (quem) {
+      html += `<span class="compliance-req-who">por ${escapeHtml(quem)}</span>`;
+    }
+    return `<div class="compliance-req-info">${html}</div>`;
+  }
+
   function renderComplianceResumo(text) {
     const raw = String(text || "").trim();
     if (!raw) return '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
@@ -1734,6 +1763,9 @@
 
     const el = $("#complianceResumo");
     if (el) el.innerHTML = renderComplianceResumo(resumo || "—");
+    // Linha discreta com tipo da solicitação + solicitante (oculta se vazio)
+    const infoEl = $("#complianceRequestInfo");
+    if (infoEl) infoEl.innerHTML = complianceRequestInfo(r || {});
     const hasCompliance = !!status || (resumo && String(resumo).trim() !== "");
     const btn = $("#btnResetCompliance");
     if (btn) btn.style.display = opts.showReset !== false && hasCompliance ? "" : "none";
@@ -1842,6 +1874,8 @@
             data-resumo="${escapeAttr(h.resumo_analise || "")}"
             data-status="${escapeAttr(h.status_compliance || "")}"
             data-date="${escapeAttr(formatDateTime(h.created_at))}"
+            data-solicitacao="${escapeAttr(h.solicitacao_compliance || "")}"
+            data-solicitante="${escapeAttr(h.solicitante_compliance || "")}"
             title="Clique para ver o resumo">
           <td style="white-space:nowrap">${formatDateTime(h.created_at)}</td>
           <td>${status}</td>
@@ -1876,6 +1910,10 @@
         ? latest.resumo_analise : "—";
       resumoEl.innerHTML = renderComplianceResumo(txt);
     }
+    // Análise periódica não tem solicitacao/solicitante: limpa a linha para não
+    // reaproveitar o valor de um artigo aberto anteriormente.
+    const infoElPeriodic = $("#complianceRequestInfo");
+    if (infoElPeriodic) infoElPeriodic.innerHTML = complianceRequestInfo(latest);
     const btn = $("#btnResetCompliance");
     if (btn) {
       const hasData = !!latest && (latest.status_compliance || (latest.resumo_analise?.trim()));
@@ -2401,6 +2439,8 @@
     const resumo = row.dataset.resumo || "";
     const status = row.dataset.status || "";
     const date = row.dataset.date || "—";
+    const solicitacao = row.dataset.solicitacao || "";
+    const solicitante = row.dataset.solicitante || "";
 
     const meta = $("#complianceDetailMeta");
     if (meta) {
@@ -2408,7 +2448,8 @@
         `<span>${escapeHtml(date)}</span>` +
         (status
           ? `<span class="status-badge ${escapeHtml(status)}">${complianceStatusLabel(status)}</span>`
-          : "");
+          : "") +
+        complianceRequestInfo({ solicitacao_compliance: solicitacao, solicitante_compliance: solicitante });
     }
 
     const body = $("#complianceDetailResumo");
