@@ -904,6 +904,32 @@ select.filter-select option {
   color: var(--text-primary);
 }
 
+/* Input de busca dos filtros (filtro textual) */
+input.filter-input {
+  background: var(--bg-input);
+  border: var(--glass-border);
+  border-radius: var(--radius-sm);
+  padding: 7px 12px;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.8rem;
+  font-weight: 500;
+  outline: none;
+  transition: all var(--transition-fast);
+  width: 150px;
+  min-width: 110px;
+}
+
+input.filter-input::placeholder {
+  color: var(--text-muted);
+}
+
+input.filter-input:hover,
+input.filter-input:focus {
+  border-color: rgba(127, 90, 240, 0.3);
+  color: var(--text-primary);
+}
+
 .btn-primary {
   display: inline-flex;
   align-items: center;

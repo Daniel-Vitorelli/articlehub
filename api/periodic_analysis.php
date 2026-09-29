@@ -23,12 +23,14 @@ if ($method === 'GET') {
         }
     }
 
-    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx
+    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx&id_post=123
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
     $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
     $status = trim($_GET['status'] ?? '');
     $postType = trim($_GET['post_type'] ?? '');
     $dominio = trim($_GET['dominio'] ?? '');
+    // Busca por ID do post (exata). Só aceita dígitos: id_post é INT no banco.
+    $idPost = trim($_GET['id_post'] ?? '');
     $withHistory = isset($_GET['with_history']); // inclui histórico leve (id, created_at, status_compliance) por grupo
 
     // Se tem paginação, retorna agrupado (latest por dominio+id_post) + paginado
@@ -38,6 +40,7 @@ if ($method === 'GET') {
         if ($status !== '') { $where[] = 'pa.status_compliance = ?'; $params[] = $status; }
         if ($postType !== '') { $where[] = 'pa.post_type = ?'; $params[] = $postType; }
         if ($dominio !== '') { $where[] = 'pa.dominio = ?'; $params[] = $dominio; }
+        if ($idPost !== '' && ctype_digit($idPost)) { $where[] = 'pa.id_post = ?'; $params[] = (int)$idPost; }
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
         // Subquery para latest por grupo (usa índice idx_periodic_group_latest)

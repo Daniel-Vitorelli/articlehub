@@ -32,6 +32,10 @@
   let periodicAnalysisTotal = 0;
   let periodicLoadedPromise = null;
   let periodicPrefetchOffset = 0;       // próximo offset a buscar em background
+  // Filtro aplicado no BACKEND (hoje só "&id_post=123"). Vazio = conjunto completo.
+  // Precisa viajar junto com a paginação/prefetch, senão o infinite scroll volta
+  // a trazer o dataset inteiro no meio de uma busca.
+  let periodicServerFilter = "";
   let requestHistoryCache = {}; // request_id -> [history]
   let complianceHistoryCache = {}; // request_id -> [compliance_history]
   let periodicSentinelObserver = null;
@@ -49,7 +53,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.1";
+  const APP_VERSION = "1.6.2";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -262,6 +266,44 @@
     }
   }
 
+  // ---- Análise periódica: URL paginada + filtros ----
+  // URL única para todas as páginas (preload do login, view, prefetch, reload),
+  // para que o filtro de backend nunca seja esquecido em um dos caminhos.
+  function periodicPageUrl(offset) {
+    return `periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}${periodicServerFilter}`;
+  }
+
+  // Leitura única dos filtros da view. Antes essa leitura estava duplicada em 4
+  // lugares (applyPeriodicFilters, appendPeriodicRows e os 2 fluxos de reanálise
+  // otimista) — qualquer filtro novo precisava ser lembrado em todos.
+  function periodicFilters() {
+    return {
+      status: $("#filterPeriodicStatus")?.value || "",
+      type: $("#filterPeriodicType")?.value || "",
+      domain: $("#filterPeriodicDomain")?.value || "",
+      idPost: ($("#filterPeriodicIdPost")?.value || "").trim(),
+    };
+  }
+
+  function periodicMatchesFilters(r, f) {
+    return (
+      (!f.status || r.status_compliance === f.status) &&
+      (!f.type || r.post_type === f.type) &&
+      (!f.domain || r.dominio === f.domain) &&
+      (!f.idPost || String(r.id_post ?? "") === f.idPost)
+    );
+  }
+
+  // Opções dos selects (domínio/tipo) vêm do conjunto COMPLETO. Durante uma busca
+  // por id_post o dataset em memória contém só o resultado filtrado — recalcular
+  // as opções a partir dele encolheria os dropdowns. Por isso só atualizamos
+  // quando não há filtro de backend ativo.
+  function refreshPeriodicFilterOptions() {
+    if (periodicServerFilter) return;
+    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
+    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+  }
+
   // Agrupa rows da periodic_analysis em memória (latest por dominio+id_post)
   function buildPeriodicInMemory(raw) {
     const rows = Array.isArray(raw) ? raw : (raw && raw.data ? raw.data : []);
@@ -278,14 +320,13 @@
         periodicAnalysisGroups.push(g);
     });
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
-    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
-    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+    refreshPeriodicFilterOptions();
   }
 
   // Pré-carrega análise periódica em background após o login (não-bloqueante).
   function preloadPeriodicInBackground() {
     if (periodicLoadedPromise) return;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+    periodicLoadedPromise = apiGet(periodicPageUrl(0))
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
         buildPeriodicInMemory(rows);
@@ -464,24 +505,16 @@
       }
     });
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
-    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
-    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
-    const statusFilter = $("#filterPeriodicStatus")?.value || "";
-    const typeFilter = $("#filterPeriodicType")?.value || "";
-    const domainFilter = $("#filterPeriodicDomain")?.value || "";
-    periodicAnalysisVisible = periodicAnalysisAll.filter(
-      (r) =>
-        (!statusFilter || r.status_compliance === statusFilter) &&
-        (!typeFilter || r.post_type === typeFilter) &&
-        (!domainFilter || r.dominio === domainFilter),
-    );
+    refreshPeriodicFilterOptions();
+    const f = periodicFilters();
+    periodicAnalysisVisible = periodicAnalysisAll.filter((r) => periodicMatchesFilters(r, f));
     periodicAnalysisTotal = periodicAnalysisVisible.length;
   }
 
   function ensurePeriodicLoaded() {
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
-    periodicLoadedPromise = apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`)
+    periodicLoadedPromise = apiGet(periodicPageUrl(0))
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
         buildPeriodicInMemory(rows);
@@ -496,8 +529,7 @@
   // (após mutações locais ou appends em background)
   function syncPeriodicAllFromGroups() {
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
-    periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
-    periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+    refreshPeriodicFilterOptions();
     periodicAnalysisVisible = periodicAnalysisAll.slice();
   }
 
@@ -506,7 +538,7 @@
   // O restante (prefetch) continua via renderPeriodicChunk/prefetchNextPage.
   async function reloadPeriodicFromServer() {
     try {
-      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=0`);
+      const raw = await apiGet(periodicPageUrl(0));
       const rows = Array.isArray(raw) ? raw : (raw?.data || []);
       // Preserva linhas otimistas ainda não confirmadas pelo servidor (id negativo)
       const optimistic = [];
@@ -2023,13 +2055,7 @@
       created_at: createdAt,
     };
 
-    const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
-    const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
-    const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
-    const matchesFilter =
-      (!statusFilter || newRow.status_compliance === statusFilter) &&
-      (!typeFilter || newRow.post_type === typeFilter) &&
-      (!domainFilter || newRow.dominio === domainFilter);
+    const matchesFilter = periodicMatchesFilters(newRow, periodicFilters());
 
     // Memória: novo latest no grupo + antigo latest vira histórico local.
     const oldLatest = group.sorted[0];
@@ -2192,9 +2218,7 @@
     const now = new Date();
     const pad = (n) => String(n).padStart(2, "0");
     const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
-    const statusFilter = document.getElementById("filterPeriodicStatus")?.value || "";
-    const typeFilter = document.getElementById("filterPeriodicType")?.value || "";
-    const domainFilter = document.getElementById("filterPeriodicDomain")?.value || "";
+    const bulkFilters = periodicFilters();
 
     // Mapa O(1) dos grupos (o array de grupos não é reordenado, só os sorted internos).
     const groupsByKey = new Map();
@@ -2255,10 +2279,7 @@
         if (rb) rb.pushedHistory = true;
       }
 
-      const matchesFilter =
-        (!statusFilter || newRow.status_compliance === statusFilter) &&
-        (!typeFilter || newRow.post_type === typeFilter) &&
-        (!domainFilter || newRow.dominio === domainFilter);
+      const matchesFilter = periodicMatchesFilters(newRow, bulkFilters);
 
       allNewRows.push(newRow);
       if (matchesFilter) movedRows.push(newRow);
@@ -4455,7 +4476,7 @@
     periodicPrefetchBusy = true;
     try {
       const offset = periodicPrefetchOffset;
-      const raw = await apiGet(`periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}`);
+      const raw = await apiGet(periodicPageUrl(offset));
       const rows = Array.isArray(raw) ? raw : (raw?.data || []);
       if (!rows.length) { periodicPrefetchOffset = -1; return; }
       appendPeriodicRows(rows);
@@ -4530,6 +4551,43 @@
     removeSentinel();
   }
 
+  // Estado vazio contextual: durante busca por ID, deixa claro que o filtro está ativo.
+  function periodicEmptyStateHtml() {
+    const term = ($("#filterPeriodicIdPost")?.value || "").trim();
+    const msg = term
+      ? `Nenhuma análise encontrada para o ID <strong>${escapeHtml(term)}</strong>.`
+      : "Nenhuma análise encontrada.";
+    return `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>${msg}</p></div></td></tr>`;
+  }
+
+  // Busca por ID do post. Diferente dos outros filtros, roda no BACKEND: a lista em
+  // memória só tem as páginas já pré-carregadas (200 grupos por vez), então filtrar
+  // no cliente não encontraria um ID que ainda não foi baixado.
+  // O resultado substitui o dataset em memória e o infinite scroll continua
+  // paginando dentro do filtro (periodicServerFilter viaja em periodicPageUrl).
+  async function handlePeriodicIdSearch() {
+    const term = ($("#filterPeriodicIdPost")?.value || "").trim();
+    // id_post é INT no banco: só vale a pena consultar se for dígitos.
+    const nextFilter = /^\d+$/.test(term) ? `&id_post=${term}` : "";
+
+    if (nextFilter === periodicServerFilter) {
+      // Nada mudou no backend (ex: termo inválido ou valor repetido) — só re-renderiza.
+      await renderComplianceAnalysis();
+      return;
+    }
+
+    periodicServerFilter = nextFilter;
+    // Zera o conjunto em memória: o backend vai devolver só o que casar com a busca.
+    periodicAnalysisGroups = [];
+    periodicAnalysisAll = [];
+    periodicAnalysisVisible = [];
+    periodicAnalysisLoaded = 0;
+    periodicPrefetchOffset = 0;
+    periodicLoadedPromise = null;
+    Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
+    await renderComplianceAnalysis();
+  }
+
   async function renderComplianceAnalysis(opts = {}) {
     const tbody = $("#periodicAnalysisBody");
     if (!tbody) return;
@@ -4543,9 +4601,10 @@
     await ensurePeriodicLoaded();
 
     // NOVO: Buscar total real do backend (mais preciso que count local)
+    // O filtro de backend (id_post) precisa ir junto, senão o total exibido é o global.
     if (!hadData) {
       try {
-        const raw = await apiGet(`periodic_analysis.php?limit=1&offset=0`);
+        const raw = await apiGet(`periodic_analysis.php?limit=1&offset=0${periodicServerFilter}`);
         if (raw?.total !== undefined && raw.total !== null) {
           periodicAnalysisTotal = raw.total;
         }
@@ -4553,7 +4612,7 @@
     }
 
     if (periodicAnalysisAll.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+      tbody.innerHTML = periodicEmptyStateHtml();
       $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
       if (!opts.preserveSelection) selectedPeriodicKeys.clear();
       periodicAnalysisVisible = [];
@@ -4583,7 +4642,7 @@
 
       applyPeriodicFilters();
       if (!periodicAnalysisVisible.length) {
-        tbody.innerHTML = `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhuma análise encontrada.</p></div></td></tr>`;
+        tbody.innerHTML = periodicEmptyStateHtml();
         $("#periodicAnalysisInfo").textContent = "Nenhuma análise";
         updateBulkUI();
         return;
@@ -4600,15 +4659,8 @@
 
   // Aplica filtros atuais em periodicAnalysisAll → periodicAnalysisVisible.
   function applyPeriodicFilters() {
-    const statusFilter = $("#filterPeriodicStatus")?.value || "";
-    const typeFilter = $("#filterPeriodicType")?.value || "";
-    const domainFilter = $("#filterPeriodicDomain")?.value || "";
-    periodicAnalysisVisible = periodicAnalysisAll.filter(
-      (r) =>
-        (!statusFilter || r.status_compliance === statusFilter) &&
-        (!typeFilter || r.post_type === typeFilter) &&
-        (!domainFilter || r.dominio === domainFilter),
-    );
+    const f = periodicFilters();
+    periodicAnalysisVisible = periodicAnalysisAll.filter((r) => periodicMatchesFilters(r, f));
     periodicAnalysisTotal = periodicAnalysisVisible.length;
   }
 
@@ -4869,6 +4921,28 @@
     $("#filterPeriodicStatus").addEventListener("change", handlePeriodicFilterChange);
     $("#filterPeriodicType").addEventListener("change", handlePeriodicFilterChange);
     $("#filterPeriodicDomain").addEventListener("change", handlePeriodicFilterChange);
+
+    // Busca por ID do post — debounce maior que os selects porque este filtro
+    // dispara request ao backend (os outros são client-side).
+    let periodicIdSearchTimeout;
+    const inputPeriodicId = $("#filterPeriodicIdPost");
+    if (inputPeriodicId) {
+      inputPeriodicId.addEventListener("input", () => {
+        clearTimeout(periodicIdSearchTimeout);
+        periodicIdSearchTimeout = setTimeout(handlePeriodicIdSearch, 400);
+      });
+      // Enter busca imediatamente; Escape limpa e volta ao conjunto completo.
+      inputPeriodicId.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+          clearTimeout(periodicIdSearchTimeout);
+          handlePeriodicIdSearch();
+        } else if (e.key === "Escape") {
+          clearTimeout(periodicIdSearchTimeout);
+          inputPeriodicId.value = "";
+          handlePeriodicIdSearch();
+        }
+      });
+    }
 
     let searchTimeout;
     $("#globalSearch").addEventListener("input", () => {
