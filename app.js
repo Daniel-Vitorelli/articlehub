@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.7";
+  const APP_VERSION = "1.6.8";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -2293,6 +2293,9 @@
         bumpPeriodicCommentCount(key, 1);
         cancelCommentEdit();
         if (currentPeriodicCommentsKey === key) renderPeriodicComments(periodicCommentsCache[key]);
+        // O comentário pode ter tirado a linha do filtro de comentários ativo (ela "sem
+        // comentários" deixou de casar) — ou, se ela estava fora, pode trazê-la de volta.
+        syncPeriodicCommentsFilterMembership(key, "salvo");
       }
     } catch (err) {
       showToast("Erro ao salvar comentário: " + err.message, "error");
@@ -2322,6 +2325,9 @@
       if (Number($("#complianceCommentEditId")?.value || 0) === Number(id)) cancelCommentEdit();
       if (currentPeriodicCommentsKey === key) renderPeriodicComments(periodicCommentsCache[key]);
       showToast("Comentário excluído.", "success");
+      // Depois do toast genérico de propósito: se a linha saiu (ou voltou) ao filtro de
+      // comentários, a mensagem mais específica é a que importa e deve ficar visível.
+      syncPeriodicCommentsFilterMembership(key, "excluído");
     } catch (err) {
       showToast("Erro ao excluir comentário: " + err.message, "error");
     }
@@ -2367,19 +2373,112 @@
 
   // Ajuste local após criar/excluir, para a marca responder na hora (sem esperar
   // um novo ?action=counts).
-  //
-  // CASO-LIMITE conhecido (deliberado): com um filtro de comentários ativo, criar ou
-  // excluir comentário muda a PERTINÊNCIA da linha no conjunto filtrado — em "sem
-  // comentários", a linha recém-comentada deixou de casar. Aqui só a MARCA é
-  // atualizada; a linha NÃO é removida da lista, para não sumir debaixo do usuário
-  // enquanto o modal está aberto. A lista se corrige no próximo recarregamento ou
-  // troca de filtro. A marca continua sendo verdade sobre a linha (ela tem comentário).
+  // Só cuida da MARCA. A pertinência da linha no filtro de comentários ativo é tratada
+  // à parte, por syncPeriodicCommentsFilterMembership() — que pode tirar a linha da lista.
   function bumpPeriodicCommentCount(key, delta) {
     if (!key) return;
     const next = Number(periodicCommentCounts[key] || 0) + delta;
     if (next > 0) periodicCommentCounts[key] = next;
     else delete periodicCommentCounts[key];
     applyPeriodicCommentMarks();
+  }
+
+  // ---- Pertinência da linha no filtro de comentários ----
+  // Com um filtro de comentários ativo, criar/excluir comentário pode fazer a linha
+  // DEIXAR de casar com o filtro (em "sem comentários", a linha que acabou de receber o
+  // primeiro comentário; em "com comentários", a que perdeu o último). Sem tratar isso a
+  // lista contradiz o próprio filtro: a linha continuaria listada, com a marca acesa.
+  //
+  // A remoção é CIRÚRGICA (memória + DOM), sem refetch: preserva a posição do scroll,
+  // que é exatamente o que um recarregamento perderia. Mesmo desenho já usado em
+  // handlePeriodicReanalyze() para o caso "saiu do filtro atual".
+
+  // Tira a linha do conjunto filtrado atual e mantém a UI coerente: preenche o buraco
+  // com o próximo item ainda não renderizado e, se a lista esvaziar, mostra o estado
+  // vazio (senão sobra uma tabela em branco, sem explicação).
+  // NÃO mexe em periodicAnalysisGroups: o grupo continua existindo, só não pertence a
+  // esta lista filtrada.
+  // Devolve true se a linha pertencia à lista filtrada (só então vale avisar).
+  function detachPeriodicRowFromList(key) {
+    const sameKey = (r) => `${r.dominio}::${r.id_post ?? ""}` === key;
+
+    const allIdx = periodicAnalysisAll.findIndex(sameKey);
+    if (allIdx !== -1) periodicAnalysisAll.splice(allIdx, 1);
+
+    const visIdx = periodicAnalysisVisible.findIndex(sameKey);
+    const pertencia = visIdx !== -1;
+    if (pertencia) periodicAnalysisVisible.splice(visIdx, 1);
+
+    // Se estava marcada para reanálise em lote, sai da seleção: a linha não está mais
+    // na tela e o contador do botão não pode contar um item invisível.
+    selectedPeriodicKeys.delete(key);
+    updateBulkUI();
+
+    const tbody = document.getElementById("periodicAnalysisBody");
+    // CSS.escape é obrigatório: a chave é "dominio::id_post" e o domínio tem ponto.
+    const tr = tbody?.querySelector(`tr[data-periodic-key="${CSS.escape(key)}"]`) || null;
+    if (tr) {
+      tr.remove();
+      if (periodicAnalysisLoaded > 0) periodicAnalysisLoaded--;
+    }
+
+    if (!periodicAnalysisVisible.length) {
+      if (tbody) tbody.innerHTML = periodicEmptyStateHtml();
+      periodicAnalysisLoaded = 0;
+      teardownSentinelObserver();
+      const infoEl = document.getElementById("periodicAnalysisInfo");
+      if (infoEl) infoEl.textContent = "Nenhuma análise";
+      return pertencia;
+    }
+
+    updatePeriodicInfo();
+
+    // Preenche o buraco com o próximo item ainda não renderizado, se houver — senão a
+    // lista mostraria menos linhas do que realmente tem. Só quando algo SAIU de fato:
+    // sem isso renderizaria adiantado itens que o scroll ainda não pediu.
+    if (pertencia && tbody && periodicAnalysisLoaded < periodicAnalysisVisible.length) {
+      const next = periodicAnalysisVisible[periodicAnalysisLoaded];
+      if (next) {
+        const holder = document.createElement("tbody");
+        holder.innerHTML = periodicRowHtml(next);
+        const sentinel = document.getElementById("periodicScrollSentinel");
+        while (holder.firstChild) tbody.insertBefore(holder.firstChild, sentinel || null);
+        periodicAnalysisLoaded++;
+        updatePeriodicInfo();
+      }
+    }
+    return pertencia;
+  }
+
+  // Decide o que fazer depois de criar/excluir um comentário no grupo `key`.
+  // `acao` só entra na mensagem ("salvo" / "excluído").
+  // Sem filtro de comentários ativo a pertinência não muda: só a marca da linha, que
+  // bumpPeriodicCommentCount já atualizou. Nesse caso não há requisição nem aviso.
+  function syncPeriodicCommentsFilterMembership(key, acao) {
+    const comments = $("#filterPeriodicComments")?.value || "";
+    if (comments !== "with" && comments !== "without") return;
+
+    const pertence = comments === "with" ? hasPeriodicComments(key) : !hasPeriodicComments(key);
+
+    if (!pertence) {
+      if (detachPeriodicRowFromList(key)) {
+        showToast(`Comentário ${acao} — o item saiu do filtro atual.`, "success");
+      }
+      return;
+    }
+
+    // Caminho inverso: a linha VOLTOU a casar (excluí o comentário que a havia tirado do
+    // filtro). Só precisa fazer algo se ela realmente estiver fora da lista.
+    const sameKey = (r) => `${r.dominio}::${r.id_post ?? ""}` === key;
+    if (periodicAnalysisVisible.some(sameKey)) return;
+    if (!periodicAnalysisGroups.some((g) => g.key === key)) return;
+
+    showToast(`Comentário ${acao} — o item voltou ao filtro atual.`, "success");
+    // Reinserir na posição ordenada exigiria acertar também o corte dos chunks; refazer a
+    // consulta filtrada resolve posição, total e estado vazio de uma vez. Como o filtro
+    // NÃO mudou, os caches de histórico/comentários seguem válidos e são preservados —
+    // limpá-los faria o modal aberto perder o que já está na tela.
+    applyPeriodicServerFilters({ force: true, keepCaches: true });
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
@@ -5003,13 +5102,15 @@
   // a composição fica em buildPeriodicServerFilter(), para um não apagar o outro.
   // O resultado substitui o dataset em memória e o infinite scroll continua
   // paginando dentro do filtro (periodicServerFilter viaja em periodicPageUrl).
-  async function applyPeriodicServerFilters() {
+  async function applyPeriodicServerFilters(opts = {}) {
     // Busca PARCIAL: o backend casa o termo em qualquer posição do id_post.
     // Termo inválido (não-dígitos) simplesmente não vira filtro — mesma regra do
     // predicado do cliente (isValidIdPostTerm), para os dois nunca divergirem.
     const nextFilter = buildPeriodicServerFilter();
 
-    if (nextFilter === periodicServerFilter) {
+    // `force` refaz a consulta mesmo com o filtro inalterado (a linha voltou a casar com
+    // o filtro de comentários e precisa reaparecer na lista).
+    if (nextFilter === periodicServerFilter && !opts.force) {
       // Nada mudou no backend (ex: termo inválido ou valor repetido) — só re-renderiza.
       await renderComplianceAnalysis();
       return;
@@ -5023,8 +5124,13 @@
     periodicAnalysisLoaded = 0;
     periodicPrefetchOffset = 0;
     periodicLoadedPromise = null;
-    Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
-    Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
+    // Os caches são por GRUPO, não do conjunto filtrado: só perdem validade quando o
+    // filtro muda. Num refetch forçado pelo mesmo filtro (`keepCaches`) eles seguem
+    // corretos — e limpá-los faria o modal aberto perder o que já está na tela.
+    if (!opts.keepCaches) {
+      Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
+      Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
+    }
     await renderComplianceAnalysis();
   }
 
