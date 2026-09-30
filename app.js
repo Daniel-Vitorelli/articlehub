@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.5";
+  const APP_VERSION = "1.6.6";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -279,6 +279,13 @@
     return `periodic_analysis.php?limit=${PERIODIC_BACKEND_PAGE}&offset=${offset}${periodicServerFilter}`;
   }
 
+  // Um termo de busca por ID só é utilizável se tiver APENAS dígitos — mesma regra do
+  // backend (ctype_digit). Ponto único de verdade: usado tanto pelo predicado do cliente
+  // quanto pelo construtor do filtro de servidor, para os dois nunca divergirem.
+  function isValidIdPostTerm(term) {
+    return /^\d+$/.test(String(term || "").trim());
+  }
+
   // Leitura única dos filtros da view. Antes essa leitura estava duplicada em 4
   // lugares (applyPeriodicFilters, appendPeriodicRows e os 2 fluxos de reanálise
   // otimista) — qualquer filtro novo precisava ser lembrado em todos.
@@ -291,12 +298,18 @@
     };
   }
 
+  // O filtro de idPost é PARCIAL (casa em qualquer posição), igual ao backend.
+  // Se aqui fosse comparação exata (===), este predicado descartaria justamente as
+  // linhas parciais que o backend devolveu — a busca apareceria sempre vazia.
+  // Termo inválido (ex.: "4 8") não vira filtro no servidor; se o cliente o aplicasse
+  // mesmo assim, a tabela apareceria vazia enquanto o servidor devolveu tudo.
   function periodicMatchesFilters(r, f) {
+    const idTerm = isValidIdPostTerm(f.idPost) ? f.idPost : "";
     return (
       (!f.status || r.status_compliance === f.status) &&
       (!f.type || r.post_type === f.type) &&
       (!f.domain || r.dominio === f.domain) &&
-      (!f.idPost || String(r.id_post ?? "") === f.idPost)
+      (!idTerm || String(r.id_post ?? "").includes(idTerm))
     );
   }
 
@@ -4932,10 +4945,11 @@
   }
 
   // Estado vazio contextual: durante busca por ID, deixa claro que o filtro está ativo.
+  // Só cita o termo quando ele é de fato utilizável — um termo inválido não vira filtro.
   function periodicEmptyStateHtml() {
     const term = ($("#filterPeriodicIdPost")?.value || "").trim();
-    const msg = term
-      ? `Nenhuma análise encontrada para o ID <strong>${escapeHtml(term)}</strong>.`
+    const msg = isValidIdPostTerm(term)
+      ? `Nenhuma análise encontrada com ID contendo <strong>${escapeHtml(term)}</strong>.`
       : "Nenhuma análise encontrada.";
     return `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>${msg}</p></div></td></tr>`;
   }
@@ -4947,8 +4961,10 @@
   // paginando dentro do filtro (periodicServerFilter viaja em periodicPageUrl).
   async function handlePeriodicIdSearch() {
     const term = ($("#filterPeriodicIdPost")?.value || "").trim();
-    // id_post é INT no banco: só vale a pena consultar se for dígitos.
-    const nextFilter = /^\d+$/.test(term) ? `&id_post=${term}` : "";
+    // Busca PARCIAL: o backend casa o termo em qualquer posição do id_post.
+    // Termo inválido (não-dígitos) simplesmente não vira filtro — mesma regra do
+    // predicado do cliente (isValidIdPostTerm), para os dois nunca divergirem.
+    const nextFilter = isValidIdPostTerm(term) ? `&id_post=${encodeURIComponent(term)}` : "";
 
     if (nextFilter === periodicServerFilter) {
       // Nada mudou no backend (ex: termo inválido ou valor repetido) — só re-renderiza.

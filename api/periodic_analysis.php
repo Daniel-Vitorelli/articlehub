@@ -29,7 +29,7 @@ if ($method === 'GET') {
     $status = trim($_GET['status'] ?? '');
     $postType = trim($_GET['post_type'] ?? '');
     $dominio = trim($_GET['dominio'] ?? '');
-    // Busca por ID do post (exata). Só aceita dígitos: id_post é INT no banco.
+    // Busca por ID do post (parcial). Só aceita dígitos: id_post é INT no banco.
     $idPost = trim($_GET['id_post'] ?? '');
     $withHistory = isset($_GET['with_history']); // inclui histórico leve (id, created_at, status_compliance) por grupo
 
@@ -40,7 +40,16 @@ if ($method === 'GET') {
         if ($status !== '') { $where[] = 'pa.status_compliance = ?'; $params[] = $status; }
         if ($postType !== '') { $where[] = 'pa.post_type = ?'; $params[] = $postType; }
         if ($dominio !== '') { $where[] = 'pa.dominio = ?'; $params[] = $dominio; }
-        if ($idPost !== '' && ctype_digit($idPost)) { $where[] = 'pa.id_post = ?'; $params[] = (int)$idPost; }
+        // Busca por ID do post: PARCIAL, casa em qualquer posição (ex.: "48" acha 4821 e 1487).
+        // CAST é necessário porque id_post é INT.
+        // ctype_digit garante que o termo só tem dígitos — logo não existe % nem _ para
+        // escapar no LIKE (o wildcard não pode ser injetado pelo usuário).
+        // id_post NULL: CAST(NULL AS CHAR) é NULL, o LIKE resulta NULL e a linha fica fora
+        // do resultado — que é o correto, um ID inexistente não deve casar com dígitos.
+        if ($idPost !== '' && ctype_digit($idPost)) {
+            $where[] = 'CAST(pa.id_post AS CHAR) LIKE ?';
+            $params[] = '%' . $idPost . '%';
+        }
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
         // Subquery para latest por grupo (usa índice idx_periodic_group_latest)
