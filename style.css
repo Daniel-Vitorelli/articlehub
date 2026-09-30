@@ -1251,6 +1251,36 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
 
 .compliance-clickable { cursor: pointer; }
 
+/* Abas do resumo da análise — exclusivas da análise periódica.
+   A solicitação comum mantém o layout empilhado de sempre (sem abas).
+   Especificidade com #modalCompliance é necessária para vencer o display:flex
+   herdado de .msg-tabs, que é declarado mais abaixo no arquivo. */
+#modalCompliance .compliance-tabs {
+  display: none;
+  margin-bottom: 18px;
+}
+#modalCompliance.is-periodic .compliance-tabs { display: flex; }
+/* No modo com abas o próprio rótulo da aba já nomeia a seção, então o botão de
+   toggle, o divisor e o título antigos do histórico viram ruído — somem. */
+#modalCompliance.is-periodic #btnToggleComplianceHistory,
+#modalCompliance.is-periodic #complianceHistoryDivider,
+#modalCompliance.is-periodic #complianceHistoryHeading {
+  display: none;
+}
+
+/* Subtítulo do cabeçalho do modal (domínio · Post #id · status) */
+.modal-title-group { min-width: 0; }
+.modal-subtitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.modal-subtitle .compliance-modal-sep { opacity: 0.45; }
+
 /* Resumo da análise (compliance) */
 #complianceResumo {
   max-height: 60vh;

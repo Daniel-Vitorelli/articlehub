@@ -1024,43 +1024,58 @@
   <div class="modal-overlay" id="modalCompliance">
     <div class="modal">
       <div class="modal-header">
-        <h3>📋 Resumo da Análise</h3>
+        <div class="modal-title-group">
+          <h3>📋 Resumo da Análise</h3>
+          <!-- Subtítulo: só na análise periódica. Diz qual artigo está aberto (antes o modal não dizia). -->
+          <div id="complianceModalSubtitle" class="modal-subtitle" style="display:none;"></div>
+        </div>
         <button class="modal-close" data-close="modalCompliance" aria-label="Fechar">✕</button>
       </div>
       <div class="modal-body">
-        <p id="complianceResumo" style="white-space:pre-wrap;line-height:1.6;"></p>
-        <div id="complianceRequestInfo"></div>
-        <button class="btn-secondary" id="btnToggleComplianceHistory" style="margin-top:12px;width:100%;">
-          📜 Ver Histórico de Análises
-        </button>
-        <div id="complianceHistoryContainer" style="display:none;margin-top:16px;">
-          <hr style="margin:0 0 16px; border-color: rgba(255,255,255,0.08);">
-          <h4 style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
-            📜 Histórico de Análises
-          </h4>
-          <div style="max-height:200px; overflow:auto;">
-            <table class="data-table" style="font-size:0.8rem;">
-              <thead>
-                <tr>
-                  <th>Data/Hora</th>
-                  <th>Status</th>
-                  <th style="width:60px;"></th>
-                </tr>
-              </thead>
-              <tbody id="complianceHistoryBody"></tbody>
-            </table>
-            <p id="complianceHistoryEmpty" style="display:none; text-align:center; padding:1rem; color:var(--text-muted);">
-              Nenhuma análise registrada.
-            </p>
+        <!-- Abas: só na análise periódica (a solicitação comum mantém o layout empilhado de sempre).
+             Reusa o componente .msg-tabs, que já existe para Mensagens. -->
+        <div class="msg-tabs compliance-tabs" id="complianceTabs">
+          <button class="msg-tab active" data-compliance-tab="resumo">Resumo</button>
+          <button class="msg-tab" data-compliance-tab="historico">Histórico</button>
+          <button class="msg-tab" data-compliance-tab="comentarios">Comentários</button>
+        </div>
+
+        <!-- Painel: Resumo -->
+        <div data-compliance-panel="resumo">
+          <p id="complianceResumo" style="white-space:pre-wrap;line-height:1.6;"></p>
+          <div id="complianceRequestInfo"></div>
+        </div>
+
+        <!-- Painel: Histórico -->
+        <div data-compliance-panel="historico">
+          <button class="btn-secondary" id="btnToggleComplianceHistory" style="margin-top:12px;width:100%;">
+            📜 Ver Histórico de Análises
+          </button>
+          <div id="complianceHistoryContainer" style="display:none;margin-top:16px;">
+            <hr id="complianceHistoryDivider" style="margin:0 0 16px; border-color: rgba(255,255,255,0.08);">
+            <h4 id="complianceHistoryHeading" style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
+              📜 Histórico de Análises
+            </h4>
+            <div style="max-height:200px; overflow:auto;">
+              <table class="data-table" style="font-size:0.8rem;">
+                <thead>
+                  <tr>
+                    <th>Data/Hora</th>
+                    <th>Status</th>
+                    <th style="width:60px;"></th>
+                  </tr>
+                </thead>
+                <tbody id="complianceHistoryBody"></tbody>
+              </table>
+              <p id="complianceHistoryEmpty" style="display:none; text-align:center; padding:1rem; color:var(--text-muted);">
+                Nenhuma análise registrada.
+              </p>
+            </div>
           </div>
         </div>
 
-        <!-- Comentários — só aparece em itens da análise periódica -->
-        <div id="complianceCommentsBlock" style="display:none;margin-top:16px;">
-          <hr style="margin:0 0 16px; border-color: rgba(255,255,255,0.08);">
-          <h4 style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
-            💬 Comentários
-          </h4>
+        <!-- Painel: Comentários — só aparece em itens da análise periódica -->
+        <div id="complianceCommentsBlock" data-compliance-panel="comentarios" style="display:none;">
           <div id="complianceCommentsList" class="pendencies-list" style="max-height:220px; overflow-y:auto; margin-bottom:14px;"></div>
           <input type="hidden" id="complianceCommentEditId" value="">
           <div class="form-group" style="margin-bottom:0;">

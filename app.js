@@ -55,7 +55,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.3";
+  const APP_VERSION = "1.6.4";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -1815,78 +1815,89 @@
     // Limpa contexto periódico: garante que modais de requests nunca
     // sejam roteados para a lógica de análise periódica
     modalEl.dataset.periodicKey = "";
-    // Comentários são exclusivos da análise periódica — esconde e descarta o rascunho.
-    const commentsBlockReq = $("#complianceCommentsBlock");
-    if (commentsBlockReq) commentsBlockReq.style.display = "none";
+    // Solicitação comum não tem abas nem subtítulo: volta ao layout empilhado e
+    // esconde o bloco de comentários (exclusivo da análise periódica).
+    resetComplianceChromeForRequest();
     currentPeriodicCommentsKey = "";
     cancelCommentEdit();
     openModal("modalCompliance");
   }
 
+  // Carrega o histórico do item aberto e garante o container visível.
+  // Caminho único de carga, reusado por dois gatilhos: o botão de toggle (solicitação
+  // comum) e a aba "Histórico" (análise periódica).
+  async function showComplianceHistory() {
+    const container = $("#complianceHistoryContainer");
+    if (!container) return;
+
+    const modalEl = document.getElementById("modalCompliance");
+    const periodicKey = modalEl?.dataset?.periodicKey;
+
+    if (periodicKey) {
+      const cachedP = periodicHistoryCache[periodicKey];
+      if (cachedP !== undefined) {
+        complianceHistoryProvider = { periodicKey, rows: cachedP };
+        renderComplianceHistoryRows(cachedP);
+      }
+      // Stale-while-revalidate (igual ao de solicitações): o cache pode ter sido
+      // limpo/atualizado pelo webhook com o modal aberto — busca o fresco em
+      // background e atualiza se o modal continuar no mesmo grupo.
+      const sepIdx = periodicKey.lastIndexOf("::");
+      const pDom = sepIdx === -1 ? periodicKey : periodicKey.slice(0, sepIdx);
+      const pId = sepIdx === -1 ? "" : periodicKey.slice(sepIdx + 2);
+      apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(pDom)}&id_post=${encodeURIComponent(pId)}`)
+        .then((raw) => {
+          const data = Array.isArray(raw) ? raw : (raw?.data || []);
+          const historyOnly = data.slice(1).map((h) => ({
+            created_at: h.created_at,
+            status_compliance: h.status_compliance,
+            resumo_analise: h.resumo_analise || "",
+          }));
+          periodicHistoryCache[periodicKey] = historyOnly;
+          const m = document.getElementById("modalCompliance");
+          const cont = document.getElementById("complianceHistoryContainer");
+          if (m?.dataset?.periodicKey === periodicKey && cont && cont.style.display !== "none") {
+            complianceHistoryProvider = { periodicKey, rows: historyOnly };
+            renderComplianceHistoryRows(historyOnly);
+          }
+        })
+        .catch(() => {
+          if (cachedP === undefined) renderComplianceHistoryRows([]);
+        });
+    } else {
+      // Stale-while-revalidate: mostra o cache na hora (instantâneo) e busca o
+      // fresco em background; atualiza se o modal continuar aberto no mesmo request.
+      const id = Number(modalEl?.dataset?.requestId);
+      if (id) {
+        const cached = complianceHistoryCache[id];
+        if (cached) renderComplianceHistoryRows(cached);
+        apiGet(`compliance.php?request_id=${id}`)
+          .then((rows) => {
+            const data = Array.isArray(rows) ? rows : [];
+            complianceHistoryCache[id] = data;
+            const m = document.getElementById("modalCompliance");
+            const cont = document.getElementById("complianceHistoryContainer");
+            if (m && Number(m.dataset?.requestId) === id && !m.dataset?.periodicKey && cont && cont.style.display !== "none") {
+              complianceHistoryProvider = { rows: data };
+              renderComplianceHistoryRows(data);
+            }
+          })
+          .catch(() => {
+            if (!cached) renderComplianceHistoryRows([]);
+          });
+      }
+    }
+    container.style.display = "block";
+  }
+
+  // Botão "Ver/Ocultar Histórico" — usado apenas na solicitação comum.
   async function toggleComplianceHistory() {
     const container = $("#complianceHistoryContainer");
     const btn = $("#btnToggleComplianceHistory");
     if (!container || !btn) return;
     const hidden = container.style.display === "none" || container.style.display === "";
     if (hidden) {
-      const modalEl = document.getElementById("modalCompliance");
-      const periodicKey = modalEl?.dataset?.periodicKey;
-
-      if (periodicKey) {
-        const cachedP = periodicHistoryCache[periodicKey];
-        if (cachedP !== undefined) {
-          complianceHistoryProvider = { periodicKey, rows: cachedP };
-          renderComplianceHistoryRows(cachedP);
-        }
-        // Stale-while-revalidate (igual ao de solicitações): o cache pode ter sido
-        // limpo/atualizado pelo webhook com o modal aberto — busca o fresco em
-        // background e atualiza se o modal continuar no mesmo grupo.
-        const sepIdx = periodicKey.lastIndexOf("::");
-        const pDom = sepIdx === -1 ? periodicKey : periodicKey.slice(0, sepIdx);
-        const pId = sepIdx === -1 ? "" : periodicKey.slice(sepIdx + 2);
-        apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(pDom)}&id_post=${encodeURIComponent(pId)}`)
-          .then((raw) => {
-            const data = Array.isArray(raw) ? raw : (raw?.data || []);
-            const historyOnly = data.slice(1).map((h) => ({
-              created_at: h.created_at,
-              status_compliance: h.status_compliance,
-              resumo_analise: h.resumo_analise || "",
-            }));
-            periodicHistoryCache[periodicKey] = historyOnly;
-            const m = document.getElementById("modalCompliance");
-            const cont = document.getElementById("complianceHistoryContainer");
-            if (m?.dataset?.periodicKey === periodicKey && cont && cont.style.display !== "none") {
-              complianceHistoryProvider = { periodicKey, rows: historyOnly };
-              renderComplianceHistoryRows(historyOnly);
-            }
-          })
-          .catch(() => {
-            if (cachedP === undefined) renderComplianceHistoryRows([]);
-          });
-      } else {
-        // Stale-while-revalidate: mostra o cache na hora (instantâneo) e busca o
-        // fresco em background; atualiza se o modal continuar aberto no mesmo request.
-        const id = Number(modalEl?.dataset?.requestId);
-        if (id) {
-          const cached = complianceHistoryCache[id];
-          if (cached) renderComplianceHistoryRows(cached);
-          apiGet(`compliance.php?request_id=${id}`)
-            .then((rows) => {
-              const data = Array.isArray(rows) ? rows : [];
-              complianceHistoryCache[id] = data;
-              const m = document.getElementById("modalCompliance");
-              const cont = document.getElementById("complianceHistoryContainer");
-              if (m && Number(m.dataset?.requestId) === id && !m.dataset?.periodicKey && cont && cont.style.display !== "none") {
-                complianceHistoryProvider = { rows: data };
-                renderComplianceHistoryRows(data);
-              }
-            })
-            .catch(() => {
-              if (!cached) renderComplianceHistoryRows([]);
-            });
-        }
-      }
-      container.style.display = "block";
+      await showComplianceHistory();
       btn.textContent = "📜 Ocultar Histórico";
     } else {
       container.style.display = "none";
@@ -1936,6 +1947,84 @@
     }
   }
 
+  // ============================================
+  //  ABAS DO MODAL DE ANÁLISE
+  // ============================================
+  // Exclusivas da análise periódica. Lá o resumo + histórico + comentários ficavam
+  // empilhados e se atropelavam no scroll do modal; nas abas cada um ocupa a altura toda.
+  // A solicitação comum segue com o layout empilhado de sempre (sem abas).
+  // O estado vive em modal.dataset.complianceTab, então cada abertura parte limpa.
+
+  function activateComplianceTab(tabName) {
+    const modal = document.getElementById("modalCompliance");
+    if (!modal) return;
+    const previous = modal.dataset.complianceTab || "";
+    modal.dataset.complianceTab = tabName;
+
+    modal.querySelectorAll("[data-compliance-tab]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.complianceTab === tabName);
+    });
+    modal.querySelectorAll("[data-compliance-panel]").forEach((panel) => {
+      panel.style.display = panel.dataset.compliancePanel === tabName ? "" : "none";
+    });
+
+    // Histórico é carregado sob demanda: só ao entrar na aba (e ao voltar para ela),
+    // reusando o mesmo caminho stale-while-revalidate do botão.
+    if (tabName === "historico" && previous !== "historico") showComplianceHistory();
+  }
+
+  // Cabeçalho do modal em modo periódico: "dominio · Post #id · [status]".
+  // Antes o modal não dizia qual artigo estava aberto — só "Resumo da Análise".
+  function complianceModalSubtitle(latest, dominio, idPost) {
+    const parts = [];
+    if (dominio) parts.push(escapeHtml(dominio));
+    if (idPost !== "" && idPost != null) parts.push(`Post #${escapeHtml(String(idPost))}`);
+    const status = latest?.status_compliance;
+    if (status) {
+      parts.push(`<span class="status-badge ${escapeHtml(status)}">${complianceStatusLabel(status)}</span>`);
+    }
+    return parts.join('<span class="compliance-modal-sep">·</span>');
+  }
+
+  // Liga abas + subtítulo (análise periódica) e sempre abre na aba Resumo.
+  function setupComplianceChromeForPeriodic(latest, dominio, idPost) {
+    const modal = document.getElementById("modalCompliance");
+    if (!modal) return;
+    modal.classList.add("is-periodic");
+
+    const sub = document.getElementById("complianceModalSubtitle");
+    if (sub) {
+      const html = complianceModalSubtitle(latest, dominio, idPost);
+      sub.innerHTML = html;
+      sub.style.display = html ? "" : "none";
+    }
+
+    modal.dataset.complianceTab = "";
+    activateComplianceTab("resumo");
+  }
+
+  // Desliga as abas e restaura o layout empilhado (solicitação comum).
+  function resetComplianceChromeForRequest() {
+    const modal = document.getElementById("modalCompliance");
+    if (!modal) return;
+    modal.classList.remove("is-periodic");
+    modal.dataset.complianceTab = "";
+
+    const sub = document.getElementById("complianceModalSubtitle");
+    if (sub) {
+      sub.innerHTML = "";
+      sub.style.display = "none";
+    }
+    modal.querySelectorAll("[data-compliance-tab]").forEach((b) => b.classList.remove("active"));
+    // Todos os painéis visíveis, exatamente como o layout empilhado original.
+    modal.querySelectorAll("[data-compliance-panel]").forEach((p) => {
+      p.style.display = "";
+    });
+    // ...exceto os comentários, que nunca existem em solicitação comum.
+    const comments = document.getElementById("complianceCommentsBlock");
+    if (comments) comments.style.display = "none";
+  }
+
   function openComplianceModalForPeriodic(key) {
     const [dominio, idPost] = key.split("::");
     const group = periodicAnalysisGroups.find((g) => g.key === key);
@@ -1971,10 +2060,12 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    // Comentários do grupo: habilita o bloco, sempre em modo "novo comentário",
-    // e carrega em background (não bloqueia a abertura do modal).
-    const commentsBlock = $("#complianceCommentsBlock");
-    if (commentsBlock) commentsBlock.style.display = "block";
+    // Abas + subtítulo (domínio · Post #id · status). Sempre abre na aba Resumo —
+    // então os painéis de histórico e comentários já nascem ocultos.
+    setupComplianceChromeForPeriodic(latest, dominio, idPost);
+
+    // Comentários do grupo: carrega em background mesmo com a aba oculta (não bloqueia
+    // a abertura do modal) e sempre em modo "novo comentário".
     currentPeriodicCommentsKey = key;
     cancelCommentEdit();
     loadPeriodicComments(key);
@@ -2865,6 +2956,14 @@
     "click",
     toggleComplianceHistory,
   );
+
+  // ---- Abas do modal de análise (análise periódica) ----
+  // Delegação: a barra é estática, mas o listener único cobre as 3 abas sem repetição.
+  $("#complianceTabs")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-compliance-tab]");
+    if (!btn) return;
+    activateComplianceTab(btn.dataset.complianceTab);
+  });
 
   // ---- Comentários da análise periódica ----
   $("#btnSubmitComplianceComment").addEventListener("click", (e) => {
