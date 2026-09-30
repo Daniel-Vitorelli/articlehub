@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.6";
+  const APP_VERSION = "1.6.7";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -286,6 +286,20 @@
     return /^\d+$/.test(String(term || "").trim());
   }
 
+  // Filtro de BACKEND: o que precisa de consulta ao servidor (o resto é filtrado em
+  // memória por periodicMatchesFilters). Ponto único — os dois controles compõem aqui,
+  // então nunca se sobrescrevem ao mudar um com o outro já ativo.
+  // O valor viaja em periodicServerFilter, que periodicPageUrl concatena em toda página.
+  function buildPeriodicServerFilter() {
+    const term = ($("#filterPeriodicIdPost")?.value || "").trim();
+    const comments = $("#filterPeriodicComments")?.value || "";
+    let filter = "";
+    if (isValidIdPostTerm(term)) filter += `&id_post=${encodeURIComponent(term)}`;
+    // 'with' = só grupos com comentário; 'without' = só sem. Vazio = desativado.
+    if (comments === "with" || comments === "without") filter += `&comments=${comments}`;
+    return filter;
+  }
+
   // Leitura única dos filtros da view. Antes essa leitura estava duplicada em 4
   // lugares (applyPeriodicFilters, appendPeriodicRows e os 2 fluxos de reanálise
   // otimista) — qualquer filtro novo precisava ser lembrado em todos.
@@ -303,6 +317,13 @@
   // linhas parciais que o backend devolveu — a busca apareceria sempre vazia.
   // Termo inválido (ex.: "4 8") não vira filtro no servidor; se o cliente o aplicasse
   // mesmo assim, a tabela apareceria vazia enquanto o servidor devolveu tudo.
+  //
+  // O filtro de COMENTÁRIOS (f.comments) é deliberadamente AUSENTE daqui: ele é
+  // resolvido só no servidor (EXISTS/NOT EXISTS). O mapa periodicCommentCounts chega
+  // de forma assíncrona, então reaplicá-lo no cliente abriria uma corrida em que, com
+  // "com comentários" ativo, as linhas recém-chegadas seriam descartadas antes de os
+  // totais carregarem — a lista apareceria vazia. O servidor já devolveu o conjunto
+  // certo, então aqui basta não contradizê-lo.
   function periodicMatchesFilters(r, f) {
     const idTerm = isValidIdPostTerm(f.idPost) ? f.idPost : "";
     return (
@@ -2346,6 +2367,13 @@
 
   // Ajuste local após criar/excluir, para a marca responder na hora (sem esperar
   // um novo ?action=counts).
+  //
+  // CASO-LIMITE conhecido (deliberado): com um filtro de comentários ativo, criar ou
+  // excluir comentário muda a PERTINÊNCIA da linha no conjunto filtrado — em "sem
+  // comentários", a linha recém-comentada deixou de casar. Aqui só a MARCA é
+  // atualizada; a linha NÃO é removida da lista, para não sumir debaixo do usuário
+  // enquanto o modal está aberto. A lista se corrige no próximo recarregamento ou
+  // troca de filtro. A marca continua sendo verdade sobre a linha (ela tem comentário).
   function bumpPeriodicCommentCount(key, delta) {
     if (!key) return;
     const next = Number(periodicCommentCounts[key] || 0) + delta;
@@ -4944,27 +4972,42 @@
     removeSentinel();
   }
 
-  // Estado vazio contextual: durante busca por ID, deixa claro que o filtro está ativo.
-  // Só cita o termo quando ele é de fato utilizável — um termo inválido não vira filtro.
+  // Estado vazio contextual: deixa claro QUAIS filtros de backend estão ativos, senão
+  // a tabela vazia parece defeito. Só cita o termo quando ele é de fato utilizável —
+  // um termo inválido não vira filtro.
   function periodicEmptyStateHtml() {
     const term = ($("#filterPeriodicIdPost")?.value || "").trim();
-    const msg = isValidIdPostTerm(term)
-      ? `Nenhuma análise encontrada com ID contendo <strong>${escapeHtml(term)}</strong>.`
-      : "Nenhuma análise encontrada.";
+    const comments = $("#filterPeriodicComments")?.value || "";
+    const termOk = isValidIdPostTerm(term);
+    const commentsActive = comments === "with" || comments === "without";
+    const commentsLabel = comments === "with" ? "com comentários" : "sem comentários";
+
+    let msg;
+    if (termOk && commentsActive) {
+      msg = `Nenhuma análise encontrada com ID contendo <strong>${escapeHtml(term)}</strong> e ${commentsLabel}.`;
+    } else if (termOk) {
+      msg = `Nenhuma análise encontrada com ID contendo <strong>${escapeHtml(term)}</strong>.`;
+    } else if (commentsActive) {
+      msg = `Nenhuma análise encontrada ${commentsLabel}.`;
+    } else {
+      msg = "Nenhuma análise encontrada.";
+    }
     return `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>${msg}</p></div></td></tr>`;
   }
 
-  // Busca por ID do post. Diferente dos outros filtros, roda no BACKEND: a lista em
-  // memória só tem as páginas já pré-carregadas (200 grupos por vez), então filtrar
-  // no cliente não encontraria um ID que ainda não foi baixado.
+  // Aplica TODOS os filtros que dependem do BACKEND (busca por ID e filtro de
+  // comentários). Diferente dos outros filtros, estes não podem ser resolvidos no
+  // cliente: a lista em memória só tem as páginas já pré-carregadas (200 grupos por
+  // vez), então um ID ainda não baixado — ou uma contagem de comentários ainda não
+  // carregada — nunca seria encontrada. Ponto único: os dois controles entram aqui e
+  // a composição fica em buildPeriodicServerFilter(), para um não apagar o outro.
   // O resultado substitui o dataset em memória e o infinite scroll continua
   // paginando dentro do filtro (periodicServerFilter viaja em periodicPageUrl).
-  async function handlePeriodicIdSearch() {
-    const term = ($("#filterPeriodicIdPost")?.value || "").trim();
+  async function applyPeriodicServerFilters() {
     // Busca PARCIAL: o backend casa o termo em qualquer posição do id_post.
     // Termo inválido (não-dígitos) simplesmente não vira filtro — mesma regra do
     // predicado do cliente (isValidIdPostTerm), para os dois nunca divergirem.
-    const nextFilter = isValidIdPostTerm(term) ? `&id_post=${encodeURIComponent(term)}` : "";
+    const nextFilter = buildPeriodicServerFilter();
 
     if (nextFilter === periodicServerFilter) {
       // Nada mudou no backend (ex: termo inválido ou valor repetido) — só re-renderiza.
@@ -5326,18 +5369,28 @@
     if (inputPeriodicId) {
       inputPeriodicId.addEventListener("input", () => {
         clearTimeout(periodicIdSearchTimeout);
-        periodicIdSearchTimeout = setTimeout(handlePeriodicIdSearch, 400);
+        periodicIdSearchTimeout = setTimeout(applyPeriodicServerFilters, 400);
       });
       // Enter busca imediatamente; Escape limpa e volta ao conjunto completo.
       inputPeriodicId.addEventListener("keydown", (e) => {
         if (e.key === "Enter") {
           clearTimeout(periodicIdSearchTimeout);
-          handlePeriodicIdSearch();
+          applyPeriodicServerFilters();
         } else if (e.key === "Escape") {
           clearTimeout(periodicIdSearchTimeout);
           inputPeriodicId.value = "";
-          handlePeriodicIdSearch();
+          applyPeriodicServerFilters();
         }
+      });
+    }
+
+    // Filtro de comentários — também é backend (EXISTS/NOT EXISTS), então não passa
+    // pelo handlePeriodicFilterChange. É um select: não precisa de debounce.
+    const selectPeriodicComments = $("#filterPeriodicComments");
+    if (selectPeriodicComments) {
+      selectPeriodicComments.addEventListener("change", () => {
+        clearTimeout(periodicIdSearchTimeout);
+        applyPeriodicServerFilters();
       });
     }
 

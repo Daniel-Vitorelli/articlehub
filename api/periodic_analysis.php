@@ -23,7 +23,8 @@ if ($method === 'GET') {
         }
     }
 
-    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx&id_post=123
+    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx&id_post=123&comments=with
+    // comments aceita 'with' (só grupos com comentário) ou 'without' (só sem).
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
     $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
     $status = trim($_GET['status'] ?? '');
@@ -49,6 +50,17 @@ if ($method === 'GET') {
         if ($idPost !== '' && ctype_digit($idPost)) {
             $where[] = 'CAST(pa.id_post AS CHAR) LIKE ?';
             $params[] = '%' . $idPost . '%';
+        }
+        // Filtro de comentários. Só entra na query quando é pedido — assim o caminho
+        // padrão (sem filtro) continua sem depender da tabela periodic_analysis_comments.
+        // O valor é comparado com uma lista fixa, então nenhum trecho do SQL vem do
+        // usuário (por isso não há placeholder aqui).
+        // <=> é null-safe: id_post pode ser NULL em periodic_analysis.
+        $comments = trim($_GET['comments'] ?? '');
+        if ($comments === 'with' || $comments === 'without') {
+            $exists = 'EXISTS (SELECT 1 FROM periodic_analysis_comments pc
+                               WHERE pc.dominio = pa.dominio AND pc.id_post <=> pa.id_post)';
+            $where[] = $comments === 'with' ? $exists : 'NOT ' . $exists;
         }
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 
