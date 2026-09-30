@@ -1069,6 +1069,20 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   border-bottom: none;
 }
 
+/* Indicação discreta de que a linha da análise periódica tem comentários:
+   um traço fino na borda DIREITA. box-shadow inset (e não border) para não
+   deslocar 2px o layout das linhas marcadas em relação às demais. */
+#periodicAnalysisBody tr.has-comments {
+  box-shadow: inset -2px 0 0 rgba(57, 160, 237, 0.5);
+}
+
+/* Foco/seleção já usam box-shadow inset à ESQUERDA — como é a mesma propriedade,
+   a regra acima apagaria o traço esquerdo. Aqui os dois convivem. */
+#periodicAnalysisBody tr.is-focused.has-comments,
+#periodicAnalysisBody tr.is-selected.has-comments {
+  box-shadow: inset 3px 0 0 var(--accent-primary), inset -2px 0 0 rgba(57, 160, 237, 0.5);
+}
+
 /* Table Cell Styles */
 .article-title {
   font-weight: 600;

@@ -44,6 +44,10 @@
   const periodicHistoryCache = {};     // key -> [history rows]
   const periodicCommentsCache = {};    // key "dominio::id_post" -> [comment rows]
   let currentPeriodicCommentsKey = ""; // grupo cujos comentários estão renderizados agora
+  // key "dominio::id_post" -> nº de comentários. Só os grupos COM comentários entram aqui;
+  // é o que permite marcar a linha da tabela sem abrir o modal.
+  let periodicCommentCounts = {};
+  let periodicCommentCountsLoaded = false; // evita refetch a cada entrada na view
   let periodicPrefetchBusy = false;
   // COMENTADO: Smart history preloader config (substituído por history_batch direto)
   // let historyPreloadQueue = [];
@@ -55,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.4";
+  const APP_VERSION = "1.6.5";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -328,6 +332,8 @@
   // Pré-carrega análise periódica em background após o login (não-bloqueante).
   function preloadPeriodicInBackground() {
     if (periodicLoadedPromise) return;
+    // Em paralelo com a 1ª página: alimenta a marca de comentário das linhas.
+    ensurePeriodicCommentCounts();
     periodicLoadedPromise = apiGet(periodicPageUrl(0))
       .then((raw) => {
         const rows = Array.isArray(raw) ? raw : (raw?.data || []);
@@ -514,6 +520,7 @@
   }
 
   function ensurePeriodicLoaded() {
+    ensurePeriodicCommentCounts();
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
     periodicLoadedPromise = apiGet(periodicPageUrl(0))
@@ -579,6 +586,8 @@
       // Histórico pode ter mudado (resumo/status) — invalida para refetch sob demanda
       Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
       Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
+      // Comentários podem ter mudado em outra sessão: força releitura das marcas.
+      loadPeriodicCommentCounts();
     } catch (e) {
       console.error("Falha ao recarregar periódica:", e);
     }
@@ -2246,6 +2255,8 @@
         });
         if (!periodicCommentsCache[key]) periodicCommentsCache[key] = [];
         periodicCommentsCache[key].push(created);
+        // Marca a linha da tabela na hora, sem esperar novo ?action=counts.
+        bumpPeriodicCommentCount(key, 1);
         cancelCommentEdit();
         if (currentPeriodicCommentsKey === key) renderPeriodicComments(periodicCommentsCache[key]);
       }
@@ -2271,6 +2282,8 @@
       await apiDelete(`periodic_comments.php?id=${encodeURIComponent(id)}`);
       const rows = periodicCommentsCache[key] || [];
       periodicCommentsCache[key] = rows.filter((x) => Number(x.id) !== Number(id));
+      // Se era o último comentário, a marca da linha deve sumir.
+      bumpPeriodicCommentCount(key, -1);
       // Se estava editando justamente este, sai do modo edição.
       if (Number($("#complianceCommentEditId")?.value || 0) === Number(id)) cancelCommentEdit();
       if (currentPeriodicCommentsKey === key) renderPeriodicComments(periodicCommentsCache[key]);
@@ -2278,6 +2291,54 @@
     } catch (err) {
       showToast("Erro ao excluir comentário: " + err.message, "error");
     }
+  }
+
+  // ============================================
+  //  MARCA DE COMENTÁRIO NA LINHA DA TABELA
+  // ============================================
+  // Um traço fino na borda direita indica que o grupo tem comentário, sem precisar
+  // abrir o modal. Os totais vêm de UMA query agrupada (?action=counts), não de um
+  // request por linha.
+
+  function hasPeriodicComments(key) {
+    return Number(periodicCommentCounts[key] || 0) > 0;
+  }
+
+  // Aplica/remove a marca nas linhas JÁ renderizadas. A tabela é paginada por chunks,
+  // então nem toda linha existe no DOM quando os totais chegam — por isso a marca
+  // também é calculada no render da linha (periodicRowHtml).
+  function applyPeriodicCommentMarks() {
+    const tbody = $("#periodicAnalysisBody");
+    if (!tbody) return;
+    tbody.querySelectorAll("tr[data-periodic-key]").forEach((tr) => {
+      tr.classList.toggle("has-comments", hasPeriodicComments(tr.dataset.periodicKey));
+    });
+  }
+
+  function loadPeriodicCommentCounts() {
+    return apiGet("periodic_comments.php?action=counts")
+      .then((data) => {
+        periodicCommentCounts = data && !Array.isArray(data) ? data : {};
+        periodicCommentCountsLoaded = true;
+        applyPeriodicCommentMarks();
+      })
+      .catch(() => {}); // silencioso: sem os totais a tabela apenas perde a marca
+  }
+
+  // Busca só uma vez por sessão de dados; o reload do servidor força de novo.
+  function ensurePeriodicCommentCounts() {
+    if (periodicCommentCountsLoaded) return Promise.resolve();
+    return loadPeriodicCommentCounts();
+  }
+
+  // Ajuste local após criar/excluir, para a marca responder na hora (sem esperar
+  // um novo ?action=counts).
+  function bumpPeriodicCommentCount(key, delta) {
+    if (!key) return;
+    const next = Number(periodicCommentCounts[key] || 0) + delta;
+    if (next > 0) periodicCommentCounts[key] = next;
+    else delete periodicCommentCounts[key];
+    applyPeriodicCommentMarks();
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
@@ -4704,8 +4765,12 @@
       : "—";
     const dateStr = formatDateTime(r.created_at);
     const isSelected = selectedPeriodicKeys.has(key);
+    // Marca discreta na borda direita quando o grupo tem comentário (ver CSS .has-comments).
+    const rowClasses = [isSelected ? "is-selected" : "", hasPeriodicComments(key) ? "has-comments" : ""]
+      .filter(Boolean)
+      .join(" ");
     return `
-      <tr data-periodic-key="${escapeAttr(key)}" class="${isSelected ? "is-selected" : ""}">
+      <tr data-periodic-key="${escapeAttr(key)}" class="${rowClasses}">
         <td style="white-space:nowrap; position:relative; padding-left:28px;">
           <input type="checkbox" class="periodic-checkbox row-hover-checkbox" data-periodic-key="${escapeAttr(key)}" ${isSelected ? "checked" : ""}>
           <span class="periodic-date">${dateStr}</span>

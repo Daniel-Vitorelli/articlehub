@@ -2,6 +2,7 @@
 // ============================================
 //  ArticleHub — Periodic Analysis Comments API (Admin only)
 //  GET    ?dominio=X&id_post=Y  -> lista comentários do grupo
+//  GET    ?action=counts        -> mapa { "dominio::id_post": total } dos grupos COM comentários
 //  POST   { dominio, id_post, comentario } -> cria (autor vem da sessão)
 //  PUT    { id, comentario }    -> edita
 //  DELETE ?id=N                 -> exclui
@@ -15,6 +16,10 @@ $db = getDB();
 
 switch ($_SERVER['REQUEST_METHOD']) {
     case 'GET':
+        if (getAction() === 'counts') {
+            listCounts($db);
+            break;
+        }
         listComments($db);
         break;
     case 'POST':
@@ -57,6 +62,31 @@ function validateComentario($value): ?string
         return null;
     }
     return $comentario;
+}
+
+// --- Counts ---
+// Mapa dos grupos que TÊM comentários, para a tabela poder marcar a linha.
+// Uma query agrupada só: são anotações manuais de admin, então o conjunto é pequeno.
+// Devolve { "dominio::id_post": total } — a mesma chave de grupo de periodic_analysis.
+// Fica de fora da query de listagem da análise periódica de propósito: se a tabela de
+// comentários faltar, a tabela principal continua funcionando (a marca só não aparece).
+function listCounts(PDO $db): void
+{
+    $stmt = $db->query(
+        'SELECT dominio, id_post, COUNT(*) AS total
+         FROM periodic_analysis_comments
+         GROUP BY dominio, id_post'
+    );
+
+    $map = [];
+    foreach ($stmt->fetchAll() as $row) {
+        // Mesmo formato de chave do front: id_post nulo vira "" (o JS usa `id_post ?? ""`).
+        $key = $row['dominio'] . '::' . ($row['id_post'] === null ? '' : $row['id_post']);
+        $map[$key] = (int)$row['total'];
+    }
+
+    // Array vazio viraria "[]" no JSON, e o front espera um objeto.
+    jsonResponse(200, $map ?: new stdClass());
 }
 
 // --- List ---
