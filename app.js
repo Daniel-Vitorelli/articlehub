@@ -42,6 +42,8 @@
   let periodicChunkBusy = false;
   let periodicChunkQueued = false;
   const periodicHistoryCache = {};     // key -> [history rows]
+  const periodicCommentsCache = {};    // key "dominio::id_post" -> [comment rows]
+  let currentPeriodicCommentsKey = ""; // grupo cujos comentários estão renderizados agora
   let periodicPrefetchBusy = false;
   // COMENTADO: Smart history preloader config (substituído por history_batch direto)
   // let historyPreloadQueue = [];
@@ -53,7 +55,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.2";
+  const APP_VERSION = "1.6.3";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -576,6 +578,7 @@
       }
       // Histórico pode ter mudado (resumo/status) — invalida para refetch sob demanda
       Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
+      Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
     } catch (e) {
       console.error("Falha ao recarregar periódica:", e);
     }
@@ -1812,6 +1815,11 @@
     // Limpa contexto periódico: garante que modais de requests nunca
     // sejam roteados para a lógica de análise periódica
     modalEl.dataset.periodicKey = "";
+    // Comentários são exclusivos da análise periódica — esconde e descarta o rascunho.
+    const commentsBlockReq = $("#complianceCommentsBlock");
+    if (commentsBlockReq) commentsBlockReq.style.display = "none";
+    currentPeriodicCommentsKey = "";
+    cancelCommentEdit();
     openModal("modalCompliance");
   }
 
@@ -1963,6 +1971,14 @@
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
+    // Comentários do grupo: habilita o bloco, sempre em modo "novo comentário",
+    // e carrega em background (não bloqueia a abertura do modal).
+    const commentsBlock = $("#complianceCommentsBlock");
+    if (commentsBlock) commentsBlock.style.display = "block";
+    currentPeriodicCommentsKey = key;
+    cancelCommentEdit();
+    loadPeriodicComments(key);
+
     // Histórico no cache? Renderiza instantâneo (inclui cache vazio = [])
     const cachedHistory = periodicHistoryCache[key];
     if (cachedHistory !== undefined) {
@@ -1997,6 +2013,180 @@
         periodicHistoryCache[key] = [];
         if (histBody) histBody.innerHTML = `<tr><td colspan="3" style="text-align:center; color:var(--accent-danger)">Erro ao carregar histórico</td></tr>`;
       });
+  }
+
+  // ============================================
+  //  COMENTÁRIOS DA ANÁLISE PERIÓDICA
+  // ============================================
+  // Carrega os comentários do grupo aberto. Cache-first (abre instantâneo) + revalidação
+  // em background, mesmo modelo do histórico. Só pinta se o modal ainda estiver no MESMO
+  // grupo — senão o comentário de um artigo vazaria para outro.
+  async function loadPeriodicComments(key) {
+    const listEl = $("#complianceCommentsList");
+    if (!listEl) return;
+
+    const cached = periodicCommentsCache[key];
+    if (cached !== undefined) {
+      currentPeriodicCommentsKey = key;
+      renderPeriodicComments(cached);
+    } else {
+      listEl.innerHTML = '<div style="text-align:center; padding:16px 0;"><span class="spinner"></span></div>';
+    }
+
+    const [dominio, idPost] = key.split("::");
+    try {
+      const rows = await apiGet(
+        `periodic_comments.php?dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`,
+      );
+      const data = Array.isArray(rows) ? rows : (rows?.data || []);
+      periodicCommentsCache[key] = data;
+      const modal = document.getElementById("modalCompliance");
+      if (modal?.dataset?.periodicKey === key) {
+        currentPeriodicCommentsKey = key;
+        renderPeriodicComments(data);
+      }
+    } catch (err) {
+      if (cached === undefined) {
+        listEl.innerHTML = '<p style="color:var(--accent-danger); font-size:0.82rem; text-align:center;">Erro ao carregar comentários.</p>';
+      }
+    }
+  }
+
+  // Renderiza a lista. Todo valor dinâmico passa por escapeHtml.
+  // A edição/exclusão usa data-attributes + delegação de evento (não onclick inline),
+  // porque o conteúdo vem do banco.
+  function renderPeriodicComments(rows) {
+    const listEl = $("#complianceCommentsList");
+    if (!listEl) return;
+
+    if (!rows || rows.length === 0) {
+      listEl.innerHTML =
+        '<p class="text-muted" style="text-align:center; padding:16px 0; font-size:0.85rem;">Nenhum comentário ainda.</p>';
+      return;
+    }
+
+    listEl.innerHTML = rows
+      .map(
+        (c) => `
+        <div class="pendency-item">
+          <div class="pendency-header">
+            <strong>${escapeHtml(c.autor)}</strong>
+            <span>${formatDateTime(c.created_at)}</span>
+          </div>
+          <div class="pendency-body">${escapeHtml(c.comentario)}</div>
+          <div class="pendency-action">
+            <button class="btn-toggle-pendency" data-comment-edit="${escapeAttr(String(c.id))}">Editar</button>
+            <button class="btn-toggle-pendency unresolved" data-comment-delete="${escapeAttr(String(c.id))}">Excluir</button>
+          </div>
+        </div>`,
+      )
+      .join("");
+  }
+
+  // Entra em modo de edição: o textarea recebe o texto atual e o id vai para o hidden.
+  function enterCommentEditMode(id) {
+    const key = currentPeriodicCommentsKey;
+    const rows = periodicCommentsCache[key] || [];
+    const c = rows.find((x) => Number(x.id) === Number(id));
+    if (!c) return;
+
+    const input = $("#complianceCommentInput");
+    const hidden = $("#complianceCommentEditId");
+    const btn = $("#btnSubmitComplianceComment");
+    const cancelBtn = $("#btnCancelComplianceComment");
+    if (input) {
+      input.value = c.comentario || "";
+      input.focus();
+    }
+    if (hidden) hidden.value = String(c.id);
+    if (btn) btn.innerHTML = "<span>💾</span> Salvar";
+    if (cancelBtn) cancelBtn.style.display = "";
+  }
+
+  // Sai do modo de edição e limpa o rascunho.
+  function cancelCommentEdit() {
+    const input = $("#complianceCommentInput");
+    const hidden = $("#complianceCommentEditId");
+    const btn = $("#btnSubmitComplianceComment");
+    const cancelBtn = $("#btnCancelComplianceComment");
+    if (input) input.value = "";
+    if (hidden) hidden.value = "";
+    if (btn) btn.innerHTML = '<span>💬</span> Comentar';
+    if (cancelBtn) cancelBtn.style.display = "none";
+  }
+
+  // Envia o comentário: POST (novo) ou PUT (edição em andamento).
+  // Não é update otimista: created_at e id vêm do banco e ordenam a lista, então
+  // usamos a linha devolvida pelo servidor em vez de chutar valores no cliente.
+  async function submitPeriodicComment() {
+    const modal = document.getElementById("modalCompliance");
+    const key = modal?.dataset?.periodicKey;
+    if (!key) return;
+
+    const input = $("#complianceCommentInput");
+    const btn = $("#btnSubmitComplianceComment");
+    const comentario = (input?.value || "").trim();
+    if (!comentario) {
+      showToast("Digite um comentário.", "error");
+      return;
+    }
+
+    const editId = $("#complianceCommentEditId")?.value || "";
+    const [dominio, idPost] = key.split("::");
+    const originalHtml = btn ? btn.innerHTML : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span> Enviando...';
+    }
+
+    try {
+      if (editId) {
+        const updated = await apiPut("periodic_comments.php", { id: Number(editId), comentario });
+        const rows = periodicCommentsCache[key] || [];
+        const idx = rows.findIndex((x) => Number(x.id) === Number(updated.id));
+        if (idx !== -1) rows[idx] = updated;
+        cancelCommentEdit();
+        if (currentPeriodicCommentsKey === key) renderPeriodicComments(rows);
+      } else {
+        const created = await apiPost("periodic_comments.php", {
+          dominio,
+          id_post: idPost === "" ? null : idPost,
+          comentario,
+        });
+        if (!periodicCommentsCache[key]) periodicCommentsCache[key] = [];
+        periodicCommentsCache[key].push(created);
+        cancelCommentEdit();
+        if (currentPeriodicCommentsKey === key) renderPeriodicComments(periodicCommentsCache[key]);
+      }
+    } catch (err) {
+      showToast("Erro ao salvar comentário: " + err.message, "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        // cancelCommentEdit já restaurou o rótulo no caminho de sucesso; garante o resto.
+        if ($("#complianceCommentEditId")?.value) btn.innerHTML = '<span>💾</span> Salvar';
+        else if (btn.innerHTML.includes("spinner")) btn.innerHTML = originalHtml;
+      }
+    }
+  }
+
+  // Exclui o comentário do grupo aberto.
+  async function deletePeriodicComment(id) {
+    if (!confirm("Excluir este comentário?")) return;
+    const key = currentPeriodicCommentsKey;
+    if (!key) return;
+
+    try {
+      await apiDelete(`periodic_comments.php?id=${encodeURIComponent(id)}`);
+      const rows = periodicCommentsCache[key] || [];
+      periodicCommentsCache[key] = rows.filter((x) => Number(x.id) !== Number(id));
+      // Se estava editando justamente este, sai do modo edição.
+      if (Number($("#complianceCommentEditId")?.value || 0) === Number(id)) cancelCommentEdit();
+      if (currentPeriodicCommentsKey === key) renderPeriodicComments(periodicCommentsCache[key]);
+      showToast("Comentário excluído.", "success");
+    } catch (err) {
+      showToast("Erro ao excluir comentário: " + err.message, "error");
+    }
   }
 
   // HTML padrão do botão — usado para restaurar SEM capturar o estado atual
@@ -2675,6 +2865,32 @@
     "click",
     toggleComplianceHistory,
   );
+
+  // ---- Comentários da análise periódica ----
+  $("#btnSubmitComplianceComment").addEventListener("click", (e) => {
+    e.preventDefault();
+    submitPeriodicComment();
+  });
+  $("#btnCancelComplianceComment").addEventListener("click", cancelCommentEdit);
+  $("#complianceCommentInput").addEventListener("keydown", (e) => {
+    // Ctrl/Cmd+Enter envia; Escape cancela a edição.
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      submitPeriodicComment();
+    } else if (e.key === "Escape") {
+      cancelCommentEdit();
+    }
+  });
+  // Delegação de evento: os botões são recriados a cada render da lista.
+  $("#complianceCommentsList").addEventListener("click", (e) => {
+    const editBtn = e.target.closest("[data-comment-edit]");
+    if (editBtn) {
+      enterCommentEditMode(Number(editBtn.dataset.commentEdit));
+      return;
+    }
+    const delBtn = e.target.closest("[data-comment-delete]");
+    if (delBtn) deletePeriodicComment(Number(delBtn.dataset.commentDelete));
+  });
 
   $("#complianceHistoryBody").addEventListener("click", (e) => {
     const row = e.target.closest("tr.compliance-history-row");
@@ -4585,6 +4801,7 @@
     periodicPrefetchOffset = 0;
     periodicLoadedPromise = null;
     Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
+    Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
     await renderComplianceAnalysis();
   }
 

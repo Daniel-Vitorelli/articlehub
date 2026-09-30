@@ -1054,6 +1054,25 @@
             </p>
           </div>
         </div>
+
+        <!-- Comentários — só aparece em itens da análise periódica -->
+        <div id="complianceCommentsBlock" style="display:none;margin-top:16px;">
+          <hr style="margin:0 0 16px; border-color: rgba(255,255,255,0.08);">
+          <h4 style="margin:0 0 10px; font-size:0.9rem; text-transform:uppercase; letter-spacing:0.4px; color:var(--text-muted);">
+            💬 Comentários
+          </h4>
+          <div id="complianceCommentsList" class="pendencies-list" style="max-height:220px; overflow-y:auto; margin-bottom:14px;"></div>
+          <input type="hidden" id="complianceCommentEditId" value="">
+          <div class="form-group" style="margin-bottom:0;">
+            <textarea id="complianceCommentInput" class="form-textarea" rows="2" placeholder="Escreva um comentário..." maxlength="2000"></textarea>
+          </div>
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <button class="btn-primary" id="btnSubmitComplianceComment" style="flex:1;">
+              <span>💬</span> Comentar
+            </button>
+            <button class="btn-secondary" id="btnCancelComplianceComment" style="display:none;">Cancelar</button>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn-secondary" data-close="modalCompliance">Fechar</button>
