@@ -1,10 +1,28 @@
 <?php
 // ============================================
-//  ArticleHub — Periodic Analysis API (Admin only)
+//  ArticleHub — Periodic Analysis API
+//  LEITURA: todos os perfis autenticados.
+//  ESCRITA (reanálise): ver requireReanalyzePermission() logo abaixo — hoje é
+//  liberada para todos por decisão explícita, à espera de um controle próprio.
 // ============================================
 require_once __DIR__ . '/config.php';
 
-requireRole('admin');
+// A view de análise periódica é acessível a todos os perfis (não é mais admin-only).
+// O valor devolvido não é usado aqui (as rotas não precisam do usuário); a chamada é o gate.
+requireAuth();
+
+/**
+ * Quem pode disparar reanálise (POST action=reanalyze|reanalyze_bulk).
+ *
+ * POR ENQUANTO: qualquer usuário autenticado — decisão explícita do time, que vai
+ * desenvolver um controle próprio mais tarde. Este é o ÚNICO ponto a mudar para fechar
+ * a escrita (ex.: trocar o corpo por `return requireRole('admin');`, ou a regra que
+ * vier), sem tocar em mais nada do arquivo.
+ */
+function requireReanalyzePermission(): array
+{
+    return requireAuth();
+}
 
 $db = getDB();
 $method = $_SERVER['REQUEST_METHOD'];
@@ -204,6 +222,9 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
+    // Ponto único da permissão de escrita (hoje permissivo de propósito).
+    requireReanalyzePermission();
+
     $input = getInput();
     $action = $input['action'] ?? '';
 

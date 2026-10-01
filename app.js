@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.6.8";
+  const APP_VERSION = "1.7.0";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -648,8 +648,11 @@
   // ============================================
   //  PERMISSIONS
   // ============================================
+  // Devolve boolean de verdade. Antes, sem sessão, o `&&` devolvia `null` em vez de `false`
+  // — invisível nas checagens de veracidade (os 37 usos), mas vazava para quem COMPÕE o
+  // resultado com `||`, como canDeletePeriodicComment (false || null → null).
   function is(role) {
-    return currentUser && currentUser.role === role;
+    return !!(currentUser && currentUser.role === role);
   }
   function canCreate() {
     return !!currentUser;
@@ -689,6 +692,23 @@
 
   function canSeeRevisado() {
     return is("admin") || is("revisor");
+  }
+
+  // ---- Dono de um comentário da análise periódica ----
+  // O dono é o user_id gravado na criação, NUNCA o `autor`: users.name não é único no
+  // banco (só o e-mail é), então comparar por nome deixaria dois homônimos editarem o
+  // comentário um do outro, e renomear um usuário o desconectaria dos próprios comentários.
+  //
+  // Sem user_id (comentário criado antes da coluna existir) o comentário não pertence a
+  // ninguém: ninguém edita, e só um admin consegue excluir.
+  //
+  // Regra: editar é só do autor (nem admin edita o de outro — editar em nome de outro
+  // apagaria a autoria); excluir é do autor, ou de um admin para moderação.
+  function canEditPeriodicComment(c) {
+    return !!c && Number(c.user_id) === Number(currentUser?.id);
+  }
+  function canDeletePeriodicComment(c) {
+    return canEditPeriodicComment(c) || is("admin");
   }
 
   function getVisibleRequests() {
@@ -988,12 +1008,13 @@
   //  NAVIGATION (lazy - garante dados antes de render sem mudar visual)
   // ============================================
   async function navigateTo(viewName, options) {
+    // Views que continuam restritas ao admin. A análise periódica saiu desta lista: é
+    // acessível a todos os perfis (o link também foi movido para a seção Principal).
     if (
       (viewName === "users" ||
         viewName === "domains" ||
         viewName === "languages" ||
-        viewName === "niches" ||
-        viewName === "compliance-analysis") &&
+        viewName === "niches") &&
       !is("admin")
     ) {
       viewName = "dashboard";
@@ -1022,8 +1043,11 @@
       settings: "Configurações",
       messages: "Mensagens",
       logs: "Logs de Status",
+      trash: "Lixeira",
       "compliance-analysis": "Análise Periódica de Compliance",
     };
+    // O fallback "Dashboard" só aparece se a view não estiver no mapa acima — era o caso
+    // da Lixeira, que mostrava "Dashboard" no cabeçalho.
     $("#pageTitle").textContent = titles[viewName] || "Dashboard";
 
     // Lazy: garante dados antes de render (sem trocar layout, só evita tabela vazia)
@@ -2200,20 +2224,28 @@
     }
 
     listEl.innerHTML = rows
-      .map(
-        (c) => `
+      .map((c) => {
+        // Mesma regra que o servidor aplica (canEdit/canDeletePeriodicComment): editar só
+        // o próprio; excluir o próprio, ou qualquer um se for admin. Sem botão permitido,
+        // a barra de ações nem é emitida — antes ela aparecia para todo comentário.
+        const acoes = [
+          canEditPeriodicComment(c)
+            ? `<button class="btn-toggle-pendency" data-comment-edit="${escapeAttr(String(c.id))}">Editar</button>`
+            : "",
+          canDeletePeriodicComment(c)
+            ? `<button class="btn-toggle-pendency unresolved" data-comment-delete="${escapeAttr(String(c.id))}">Excluir</button>`
+            : "",
+        ].join("");
+        return `
         <div class="pendency-item">
           <div class="pendency-header">
             <strong>${escapeHtml(c.autor)}</strong>
             <span>${formatDateTime(c.created_at)}</span>
           </div>
           <div class="pendency-body">${escapeHtml(c.comentario)}</div>
-          <div class="pendency-action">
-            <button class="btn-toggle-pendency" data-comment-edit="${escapeAttr(String(c.id))}">Editar</button>
-            <button class="btn-toggle-pendency unresolved" data-comment-delete="${escapeAttr(String(c.id))}">Excluir</button>
-          </div>
-        </div>`,
-      )
+          ${acoes ? `<div class="pendency-action">${acoes}</div>` : ""}
+        </div>`;
+      })
       .join("");
   }
 

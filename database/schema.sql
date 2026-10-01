@@ -305,6 +305,31 @@ CREATE TABLE IF NOT EXISTS `periodic_analysis_status` (
   INDEX idx_periodic_status_dominio (dominio)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- ============================================
+-- TABELA: periodic_analysis_comments
+-- Comentários do time sobre um grupo de análise (dominio + id_post).
+-- Acessível a todos os perfis: todos leem e criam; EDITAR só o autor;
+-- EXCLUIR o autor ou um admin (moderação).
+-- `user_id` é quem manda na permissão — `autor` é só o nome de exibição
+-- (desnormalizado de propósito) e users.name NÃO é único, então não serve
+-- como identidade. Comentários anteriores à coluna ficam com user_id NULL:
+-- ninguém edita, só admin exclui.
+-- `id_post` é NULL-able para casar com periodic_analysis.id_post e com o
+-- normalizeIdPost() de api/periodic_comments.php ('' vira null).
+-- ============================================
+CREATE TABLE IF NOT EXISTS `periodic_analysis_comments` (
+  `id`         INT UNSIGNED    NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `autor`      VARCHAR(255)    NOT NULL COMMENT 'Nome de exibição, copiado da sessão',
+  `user_id`    INT UNSIGNED    DEFAULT NULL COMMENT 'Dono do comentário (users.id)',
+  `comentario` TEXT            NOT NULL,
+  `id_post`    INT             DEFAULT NULL,
+  `dominio`    VARCHAR(255)    NOT NULL,
+  `created_at` TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_pac_group (dominio, id_post),
+  INDEX idx_pac_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 
 -- ============================================
 -- DADOS INICIAIS: Usuários
