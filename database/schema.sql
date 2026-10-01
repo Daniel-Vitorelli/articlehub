@@ -287,13 +287,15 @@ CREATE TABLE IF NOT EXISTS `periodic_analysis` (
   `resumo_analise`    TEXT            NOT NULL,
   `dominio`           VARCHAR(50)     NOT NULL,
   `publish_status`    VARCHAR(20)     DEFAULT 'draft' COMMENT 'draft, publish, etc.',
+  `solicitante_id`    INT UNSIGNED    DEFAULT NULL COMMENT 'Quem pediu a reanalise; 0 = automatica do n8n',
   `created_at`        TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
   INDEX idx_periodic_dominio (dominio),
   INDEX idx_periodic_post (id_post),
   INDEX idx_periodic_status (status_compliance),
   INDEX idx_periodic_created (created_at),
-  INDEX idx_periodic_dominio_post (dominio, id_post)
+  INDEX idx_periodic_dominio_post (dominio, id_post),
+  INDEX idx_periodic_solicitante (solicitante_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `periodic_analysis_status` (
@@ -328,6 +330,35 @@ CREATE TABLE IF NOT EXISTS `periodic_analysis_comments` (
 
   INDEX idx_pac_group (dominio, id_post),
   INDEX idx_pac_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ============================================
+-- TABELA: periodic_reanalysis_log
+-- Um registro por POST reanalisado (não por clique): um lote de 50 gera 50 linhas.
+-- Gravado por api/periodic_analysis.php nos dois fluxos (reanalyze e reanalyze_bulk).
+--
+-- `user_id` é quem pediu, sempre da sessão. `analysis_id` liga o pedido à linha criada
+-- em periodic_analysis — SEM foreign key de propósito: aquela tabela é mantida pelo
+-- crawler externo, e um CASCADE apagaria auditoria enquanto um RESTRICT travaria o
+-- crawler. Sem FK, a linha do log sobrevive à exclusão do usuário com o id intacto.
+-- `created_at` fica com o DEFAULT do banco (gerar no PHP causava skew de ~3h).
+--
+-- Cobre apenas reanálise pedida por usuário: as análises automáticas do n8n escrevem
+-- direto no banco e não passam pelo endpoint.
+-- ============================================
+CREATE TABLE IF NOT EXISTS `periodic_reanalysis_log` (
+  `id`          INT UNSIGNED    NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `user_id`     INT UNSIGNED    NOT NULL COMMENT 'Quem pediu (users.id), sempre da sessao',
+  `dominio`     VARCHAR(50)     NOT NULL COMMENT 'Espelha periodic_analysis.dominio',
+  `id_post`     INT             DEFAULT NULL COMMENT 'Espelha periodic_analysis.id_post',
+  `analysis_id` INT UNSIGNED    DEFAULT NULL COMMENT 'id da linha criada em periodic_analysis',
+  `action`      VARCHAR(50)     NOT NULL COMMENT 'reanalyze | reanalyze_bulk',
+  `created_at`  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_prl_group        (dominio, id_post, created_at),
+  INDEX idx_prl_user_created (user_id, created_at),
+  INDEX idx_prl_created      (created_at),
+  INDEX idx_prl_analysis     (analysis_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 
@@ -464,6 +495,26 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 
 -- periodic_analysis.publish_status (pode não existir em dumps antigos)
 -- ALTER TABLE periodic_analysis ADD COLUMN publish_status VARCHAR(20) DEFAULT 'draft';
+
+-- periodic_analysis.solicitante_id (id de quem pediu a reanálise; 0 = automática do n8n)
+-- ALTER TABLE periodic_analysis ADD COLUMN solicitante_id INT UNSIGNED DEFAULT NULL AFTER publish_status;
+-- ALTER TABLE periodic_analysis ADD INDEX idx_periodic_solicitante (solicitante_id);
+
+-- periodic_reanalysis_log (criada automaticamente pela api/periodic_analysis.php no
+-- primeiro POST; script manual equivalente à definição da tabela no topo deste arquivo)
+-- CREATE TABLE IF NOT EXISTS periodic_reanalysis_log (
+--   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+--   user_id INT UNSIGNED NOT NULL,
+--   dominio VARCHAR(50) NOT NULL,
+--   id_post INT DEFAULT NULL,
+--   analysis_id INT UNSIGNED DEFAULT NULL,
+--   action VARCHAR(50) NOT NULL,
+--   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   INDEX idx_prl_group (dominio, id_post, created_at),
+--   INDEX idx_prl_user_created (user_id, created_at),
+--   INDEX idx_prl_created (created_at),
+--   INDEX idx_prl_analysis (analysis_id)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- app_settings (criada automaticamente pela api/settings.php no primeiro GET/PUT;
 -- script manual equivalente à definição da tabela no topo deste arquivo)

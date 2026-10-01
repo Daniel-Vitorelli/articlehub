@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.2";
+  const APP_VERSION = "1.7.3";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -721,6 +721,13 @@
     if (["niches"].includes(viewName) && niches.length === 0) needs.push(apiGet("niches.php").then(d => niches = d));
     if (["settings"].includes(viewName) && Object.keys(appSettings).length === 0) needs.push(apiGet("settings.php").then(d => { appSettings = Array.isArray(d) ? {} : d; }).catch(() => {}));
     if (["trash"].includes(viewName) && deletedRequests.length === 0) needs.push(apiGet("requests.php?action=deleted").then(d => deletedRequests = d));
+    // Logs de Reanálise: `users` popula o filtro e `domains` dá a URL do post para o link.
+    // Os dois já vêm no loadAll, mas um revisor/admin que caia direto aqui sem eles veria o
+    // select vazio e a coluna de link sem sentido.
+    if (["reanalysis-log"].includes(viewName) && (users.length === 0 || domains.length === 0)) {
+      if (users.length === 0) needs.push(apiGet("users.php").then(d => users = d));
+      if (domains.length === 0) needs.push(apiGet("domains.php").then(d => domains = d));
+    }
     if (needs.length) await Promise.all(needs);
   }
 
@@ -1087,13 +1094,16 @@
   //  NAVIGATION (lazy - garante dados antes de render sem mudar visual)
   // ============================================
   async function navigateTo(viewName, options) {
-    // Views que continuam restritas ao admin. A análise periódica saiu desta lista: é
-    // acessível a todos os perfis (o link também foi movido para a seção Principal).
+    // Views restritas ao admin. A análise periódica saiu desta lista: é acessível a todos os
+    // perfis (o link também foi movido para a seção Principal). `settings` foi INCLUÍDA:
+    // ela dependia só do menu escondido, então não havia guarda de rota nenhuma.
     if (
       (viewName === "users" ||
         viewName === "domains" ||
         viewName === "languages" ||
-        viewName === "niches") &&
+        viewName === "niches" ||
+        viewName === "settings" ||
+        viewName === "reanalysis-log") &&
       !is("admin")
     ) {
       viewName = "dashboard";
@@ -1123,6 +1133,7 @@
       messages: "Mensagens",
       logs: "Logs de Status",
       trash: "Lixeira",
+      "reanalysis-log": "Logs de Reanálise",
       "compliance-analysis": "Análise Periódica de Compliance",
     };
     // O fallback "Dashboard" só aparece se a view não estiver no mapa acima — era o caso
@@ -1142,6 +1153,7 @@
     if (viewName === "messages") renderMessages();
     if (viewName === "logs") renderLogs();
     if (viewName === "trash") renderTrash();
+    if (viewName === "reanalysis-log") renderReanalysisLog();
     if (viewName === "compliance-analysis") renderComplianceAnalysis();
   }
 
@@ -5064,6 +5076,88 @@
   }
 
   // ============================================
+  //  REANALYSIS LOG VIEW (ADMIN)
+  // ============================================
+  // Espelha o LIMIT de api/reanalysis_log.php. Quando a resposta vem cheia, a tela avisa:
+  // o log é append-only, então o corte precisa ser visível, não silencioso.
+  const REANALYSIS_LOG_LIMIT = 500;
+
+  const REANALYSIS_ACTION_LABELS = {
+    reanalyze: "Individual",
+    reanalyze_bulk: "Em lote",
+  };
+
+  async function renderReanalysisLog() {
+    const tbody = $("#reanalysisLogBody");
+    if (!tbody) return;
+
+    const userSelect = $("#filterReanalysisUser");
+    const dateInput = $("#filterReanalysisDate");
+    const infoEl = $("#reanalysisLogInfo");
+
+    // Filtro de usuário populado do global `users`, preservando a escolha atual (mesmo
+    // padrão de renderLogs).
+    if (userSelect) {
+      const atual = userSelect.value;
+      userSelect.innerHTML = '<option value="">Todos os Usuários</option>';
+      users.forEach((u) => {
+        userSelect.innerHTML += `<option value="${escapeAttr(String(u.id))}" ${String(u.id) === String(atual) ? "selected" : ""}>${escapeHtml(u.name)} (${escapeHtml(roleLabel(u.role))})</option>`;
+      });
+    }
+
+    // Sem filtro de data por padrão (ver comentário no index.html): pedidos de reanálise
+    // são esporádicos, então um "hoje" fixo mostraria vazio na maioria dos dias.
+    const date = (dateInput?.value || "").trim();
+    const userId = userSelect?.value || "";
+
+    const qs = [];
+    if (date) qs.push(`date=${encodeURIComponent(date)}`);
+    if (userId) qs.push(`user_id=${encodeURIComponent(userId)}`);
+    const url = "reanalysis_log.php" + (qs.length ? `?${qs.join("&")}` : "");
+
+    try {
+      const rows = await apiGet(url);
+      const data = Array.isArray(rows) ? rows : [];
+
+      if (!data.length) {
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum pedido de reanálise encontrado.</p></div></td></tr>`;
+        if (infoEl) infoEl.textContent = "Nenhum pedido";
+        return;
+      }
+
+      tbody.innerHTML = data
+        .map((r) => {
+          // A URL do blog vem do global `domains` (mesmo lookup que periodicRowHtml faz
+          // para a cor), então não precisa de JOIN no endpoint.
+          const d = domains.find((x) => x.blog_name && x.blog_name === r.dominio);
+          const papel = r.user_role
+            ? ` <span class="role-tag ${escapeAttr(String(r.user_role))}">${escapeHtml(roleLabel(r.user_role))}</span>`
+            : "";
+          return `<tr>
+            <td style="white-space:nowrap">${escapeHtml(formatDateTime(r.created_at))}</td>
+            <td>${escapeHtml(r.user_name || "—")}${papel}</td>
+            <td><div class="blog-name"><span class="blog-dot" style="background:${escapeAttr(d?.color || "#7f5af0")}"></span>${escapeHtml(r.dominio)}</div></td>
+            <td>${r.id_post != null ? escapeHtml(String(r.id_post)) : "—"}</td>
+            <td>${periodicPostLink(d?.url, r.id_post, true)}</td>
+            <td>${escapeHtml(REANALYSIS_ACTION_LABELS[r.action] || r.action)}</td>
+          </tr>`;
+        })
+        .join("");
+
+      if (infoEl) {
+        infoEl.textContent =
+          data.length === REANALYSIS_LOG_LIMIT
+            ? `Mostrando os ${REANALYSIS_LOG_LIMIT} pedidos mais recentes — use o filtro de data para ver um período.`
+            : `${data.length} pedido(s)`;
+      }
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar os pedidos de reanálise.</p></div></td></tr>`;
+      if (infoEl) infoEl.textContent = "";
+      console.error("Erro ao carregar o log de reanálise:", e);
+    }
+  }
+
+  // ============================================
   //  COMPLIANCE ANALYSIS VIEW (ADMIN)
   // ============================================
   function periodicRowHtml(r) {
@@ -5560,6 +5654,7 @@
     if (view === "domains") renderDomains();
     if (view === "messages") renderMessages();
     if (view === "settings") renderSettings();
+    if (view === "reanalysis-log") renderReanalysisLog();
     if (view === "compliance-analysis") renderComplianceAnalysis();
   }
 
@@ -5653,6 +5748,12 @@
     // Log filters
     $("#filterLogDate").addEventListener("change", renderLogs);
     $("#filterLogUser").addEventListener("change", renderLogs);
+
+    // Logs de Reanálise: são selects/date, não precisam de debounce.
+    const filterReanalysisDate = $("#filterReanalysisDate");
+    if (filterReanalysisDate) filterReanalysisDate.addEventListener("change", renderReanalysisLog);
+    const filterReanalysisUser = $("#filterReanalysisUser");
+    if (filterReanalysisUser) filterReanalysisUser.addEventListener("change", renderReanalysisLog);
 
     // Periodic analysis filters
     const handlePeriodicFilterChange = () => {

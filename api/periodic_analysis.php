@@ -24,6 +24,38 @@ function requireReanalyzePermission(): array
     return requireAuth();
 }
 
+/**
+ * Garante a tabela do log de reanálises em bancos criados antes desta feature
+ * (schema.sql só roda no primeiro init do container). Espelha ensureSettingsTable()
+ * de api/settings.php.
+ *
+ * Best-effort DE PROPÓSITO: se a criação falhar, o gate $hasLogTable desliga o log em
+ * vez de derrubar a reanálise — perder registro é ruim, quebrar uma feature central é
+ * pior. A falha aparece como "reanálises sem linha no log", que é detectável.
+ */
+function ensureReanalysisLogTable(): void
+{
+    try {
+        getDB()->exec(
+            'CREATE TABLE IF NOT EXISTS periodic_reanalysis_log (' .
+            '  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,' .
+            '  user_id INT UNSIGNED NOT NULL,' .
+            '  dominio VARCHAR(50) NOT NULL,' .
+            '  id_post INT DEFAULT NULL,' .
+            '  analysis_id INT UNSIGNED DEFAULT NULL,' .
+            '  action VARCHAR(50) NOT NULL,' .
+            '  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,' .
+            '  INDEX idx_prl_group (dominio, id_post, created_at),' .
+            '  INDEX idx_prl_user_created (user_id, created_at),' .
+            '  INDEX idx_prl_created (created_at),' .
+            '  INDEX idx_prl_analysis (analysis_id)' .
+            ') ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+        );
+    } catch (Exception $e) {
+        // silencioso: o gate de existência abaixo decide se grava
+    }
+}
+
 $db = getDB();
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -285,6 +317,14 @@ if ($method === 'POST') {
     // Quem pediu: sempre da SESSÃO, nunca do cliente (senão daria para forjar autoria).
     $solicitanteId = (int)$user['id'];
 
+    // Log dos pedidos de reanálise: uma linha por POST reanalisado (um lote de 50 → 50 linhas).
+    // O gate $hasLogTable é o mesmo espírito da tolerância a coluna ausente logo acima, só que
+    // na granularidade de TABELA: se ela não puder ser garantida, o log é pulado e a reanálise
+    // continua funcionando. created_at fica com o DEFAULT do banco.
+    ensureReanalysisLogTable();
+    $hasLogTable = (bool)$db->query("SHOW TABLES LIKE 'periodic_reanalysis_log'")->fetch();
+    $logSql = 'INSERT INTO periodic_reanalysis_log (user_id, dominio, id_post, analysis_id, action) VALUES (?, ?, ?, ?, ?)';
+
     if ($action === 'reanalyze_bulk') {
         $items = $input['items'] ?? null;
         if (!is_array($items) || count($items) === 0) {
@@ -298,6 +338,7 @@ if ($method === 'POST') {
         // consistente com as linhas antigas (gerar no PHP em America/Sao_Paulo e inserir
         // em coluna TIMESTAMP causava skew de ~3h conforme o time_zone da sessão).
         $stmt = $db->prepare($insertSql);
+        $logStmt = $hasLogTable ? $db->prepare($logSql) : null;
 
         $ids = [];
         $keys = [];
@@ -318,8 +359,15 @@ if ($method === 'POST') {
                 if ($hasPublishStatus) $params[] = $it['publish_status'] ?? 'draft';
                 if ($hasSolicitanteId) $params[] = $solicitanteId;
                 $stmt->execute($params);
-                $ids[] = (int)$db->lastInsertId();
+                $newId = (int)$db->lastInsertId();
+                $ids[] = $newId;
                 $keys[] = $it['dominio'] . '::' . $it['id_post'];
+                // Log DENTRO do foreach (e da transação): precisa do analysis_id de cada item,
+                // que só existe logo após o execute dele. Um item pulado pelos `continue`
+                // acima não cria análise, logo não gera log — as contagens ficam iguais.
+                if ($logStmt) {
+                    $logStmt->execute([$solicitanteId, $it['dominio'], $it['id_post'], $newId, 'reanalyze_bulk']);
+                }
             }
             $db->commit();
         } catch (Exception $e) {
@@ -360,9 +408,26 @@ if ($method === 'POST') {
         if ($hasSolicitanteId) $params[] = $solicitanteId;
 
         $stmt = $db->prepare($insertSql);
-        $stmt->execute($params);
+        $logStmt = $hasLogTable ? $db->prepare($logSql) : null;
 
-        $newId = (int)$db->lastInsertId();
+        // Transação envolvendo os DOIS INSERTs (análise + log). Sem ela, uma falha só no log
+        // devolveria 500 com a análise JÁ criada — o usuário tentaria de novo e criaria uma
+        // análise duplicada. Fail-closed: ou os dois existem, ou nenhum. O caminho de sucesso
+        // é idêntico ao de antes (mesmo INSERT, mesmo 201).
+        try {
+            $db->beginTransaction();
+            $stmt->execute($params);
+            $newId = (int)$db->lastInsertId();
+
+            if ($logStmt) {
+                $logStmt->execute([$solicitanteId, $input['dominio'], $input['id_post'], $newId, 'reanalyze']);
+            }
+
+            $db->commit();
+        } catch (Exception $e) {
+            if ($db->inTransaction()) $db->rollBack();
+            jsonResponse(500, ['error' => 'Falha ao criar análise']);
+        }
 
         jsonResponse(201, [
             'success' => true,

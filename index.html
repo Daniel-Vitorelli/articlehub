@@ -108,6 +108,11 @@
             <span class="nav-icon">📂</span>
             Nichos
           </a>
+          <!-- Auditoria dos pedidos de reanálise: restrito a admin (ver api/reanalysis_log.php) -->
+          <a href="#" class="nav-link" data-view="reanalysis-log">
+            <span class="nav-icon">🔁</span>
+            <span>Logs de Reanálise</span>
+          </a>
           <a href="#" class="nav-link" data-view="settings">
             <span class="nav-icon">⚙️</span>
             Configurações
@@ -407,6 +412,40 @@
             <div id="logsEmpty" style="text-align:center;padding:2rem;color:var(--text-muted);display:none">
               Nenhum log encontrado para esta data.
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: LOGS DE REANÁLISE (ADMIN) ===== -->
+      <div class="view-panel" id="viewReanalysisLog">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>🔁 Logs de Reanálise</h3>
+              <div class="table-actions" style="display:flex; align-items:center; gap:12px; margin-left:auto;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterReanalysisDate" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Data</label>
+                  <!-- Sem pré-preenchimento de propósito: pedidos de reanálise são esporádicos,
+                       então abrir filtrado por "hoje" mostraria vazio na maioria dos dias. -->
+                  <input type="date" class="filter-date" id="filterReanalysisDate" title="Deixe em branco para ver todos os períodos.">
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterReanalysisUser" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Usuário</label>
+                  <select class="filter-select" id="filterReanalysisUser">
+                    <option value="">Todos os Usuários</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Data/Hora</th><th>Usuário</th><th>Blog</th><th>Post</th><th>Link</th><th>Origem</th>
+                </tr>
+              </thead>
+              <tbody id="reanalysisLogBody"></tbody>
+            </table>
+            <div class="table-footer"><span id="reanalysisLogInfo"></span></div>
           </div>
         </div>
       </div>
