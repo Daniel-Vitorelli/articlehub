@@ -3668,6 +3668,18 @@
   // ============================================
   //  USERS VIEW (ADMIN)
   // ============================================
+  // Como a cota aparece na tabela de usuários: "10 / 24h", ou "Sem limite" em cinza quando
+  // não há cota configurada. Sem isso o admin teria de abrir usuário por usuário para saber
+  // quem está limitado — a configuração existe mas não é administrável.
+  function userQuotaLabel(u) {
+    const limite = u?.reanalysis_limit;
+    if (limite === null || limite === undefined || Number(limite) <= 0) {
+      return '<span style="color:var(--text-muted)">Sem limite</span>';
+    }
+    const horas = Number(u.reanalysis_window_hours) > 0 ? Number(u.reanalysis_window_hours) : 24;
+    return `${escapeHtml(String(limite))} / ${escapeHtml(String(horas))}h`;
+  }
+
   function renderUsers() {
     const tbody = $("#usersTableBody");
     tbody.innerHTML = users
@@ -3679,6 +3691,7 @@
           <td>${escapeHtml(u.email)}</td>
           <td><span class="role-tag ${u.role}">${roleLabel(u.role)}</span></td>
           <td><span class="status-badge ${u.active ? "done" : "pending"}">${u.active ? "Ativo" : "Inativo"}</span></td>
+          <td style="font-size:0.8rem">${userQuotaLabel(u)}</td>
           <td>
             <div class="row-actions">
               <button class="row-action-btn" data-edit-user="${u.id}" title="Editar">✏️</button>
@@ -4574,8 +4587,12 @@
     // num banco sem a migração, e nesse caso o campo fica vazio em vez de "undefined".
     form.querySelector('[name="reanalysis_limit"]').value =
       u.reanalysis_limit != null ? u.reanalysis_limit : "";
+    // Limite sem janela: mostra o valor EFECTIVO (o back assume 24h), igual ao que a tabela
+    // exibe. Deixar vazio aqui sugeriria uma cota incompleta e destoaria da coluna.
     form.querySelector('[name="reanalysis_window_hours"]').value =
-      u.reanalysis_window_hours != null ? u.reanalysis_window_hours : "";
+      u.reanalysis_window_hours != null
+        ? u.reanalysis_window_hours
+        : (u.reanalysis_limit != null ? 24 : "");
     $("#userEditId").value = u.id;
     openModal("modalUser");
   }
