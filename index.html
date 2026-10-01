@@ -575,6 +575,9 @@
                   <input type="checkbox" id="periodicSelectAll" title="Selecionar todas" style="width:14px; height:14px; accent-color:var(--accent-primary); cursor:pointer;">
                   <span>Todas</span>
                 </label>
+                <!-- Cota de reanálise do usuário logado. Fica oculta quando não há limite
+                     configurado, para não poluir a barra de quem é ilimitado. -->
+                <span id="periodicQuotaHint" style="display:none; font-size:0.75rem; color:var(--text-muted); white-space:nowrap;"></span>
                 <button class="btn-primary" id="btnBulkReanalyze" style="display:none;"><span>↺</span> Analisar Selecionados (<span id="bulkCount">0</span>)</button>
                 <input type="text" class="filter-input" id="filterPeriodicIdPost" inputmode="numeric" autocomplete="off" placeholder="Buscar ID Post" aria-label="Buscar por ID do post" title="Busca parcial: digite parte do ID (ex.: 48 acha 4821 e 1487). Enter busca na hora, Escape limpa.">
                 <select class="filter-select" id="filterPeriodicStatus" aria-label="Filtrar por status de compliance">
@@ -799,6 +802,18 @@
               <label>Senha <span class="required">*</span></label>
               <input type="password" class="form-input" name="password" placeholder="Mínimo 6 caracteres" required
                 minlength="6">
+            </div>
+          </div>
+          <!-- Cota de reanálise na Análise Periódica. Vazio nas duas = sem limite.
+               A contagem é uma JANELA MÓVEL (últimas N horas), não calendário. -->
+          <div class="form-row">
+            <div class="form-group">
+              <label>Limite de reanálises</label>
+              <input type="number" class="form-input" name="reanalysis_limit" min="1" placeholder="Vazio = sem limite">
+            </div>
+            <div class="form-group">
+              <label>Janela (horas)</label>
+              <input type="number" class="form-input" name="reanalysis_window_hours" min="1" placeholder="Padrão: 24">
             </div>
           </div>
         </form>

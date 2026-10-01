@@ -27,14 +27,58 @@ function listUsers(): void
 {
     $user = requireRole('admin', 'gestor', 'redator');
     $db = getDB();
-    // Admin vê tudo; gestor e redator só id/nome/role/ativo (para filtros e seleção)
+    // Cota de reanálise: só o branch admin devolve. O não-admin é deliberadamente mínimo
+    // (id/nome/role/ativo, para filtros e seleção) — a cota de um usuário não é assunto de
+    // gestor/redator, e incluí-la ali vazaria o dado.
+    $quotaFields = hasUserQuotaColumns($db) ? ', reanalysis_limit, reanalysis_window_hours' : '';
     if ($user['role'] === 'admin') {
-        $stmt = $db->query('SELECT id, name, email, role, active, created_at FROM users ORDER BY id');
+        $stmt = $db->query("SELECT id, name, email, role, active, created_at{$quotaFields} FROM users ORDER BY id");
     }
     else {
         $stmt = $db->query('SELECT id, name, role, active FROM users WHERE active = 1 ORDER BY id');
     }
     jsonResponse(200, $stmt->fetchAll());
+}
+
+/**
+ * As colunas da cota existem neste banco? Não há migrations no projeto, então cada uso confere
+ * antes — sem elas o CRUD de usuário segue funcionando, só não há cota a gravar.
+ */
+function hasUserQuotaColumns(PDO $db): bool
+{
+    return (bool)$db->query("SHOW COLUMNS FROM users LIKE 'reanalysis_limit'")->fetch()
+        && (bool)$db->query("SHOW COLUMNS FROM users LIKE 'reanalysis_window_hours'")->fetch();
+}
+
+/**
+ * Valida e normaliza a cota vinda do formulário do admin.
+ *
+ * Regras: sem limite informado → NULL nas duas colunas (sem limite, o padrão de quem nunca
+ * foi configurado). Limite informado sem janela válida → 24h, que é o caso comum ("N por dia").
+ * Limite zero/negativo ou texto não numérico → 400, para não virar "sem limite" em silêncio.
+ */
+function normalizeUserQuota(array $input): array
+{
+    $rawLimit = $input['reanalysis_limit'] ?? null;
+    $rawHours = $input['reanalysis_window_hours'] ?? null;
+
+    $limitVazio = $rawLimit === null || $rawLimit === '';
+    if (!$limitVazio && !is_numeric($rawLimit)) {
+        jsonResponse(400, ['error' => 'Limite de reanálises inválido.']);
+    }
+    if (!$limitVazio && !is_numeric($rawHours) && $rawHours !== null && $rawHours !== '') {
+        jsonResponse(400, ['error' => 'Janela de reanálises inválida.']);
+    }
+
+    $limit = $limitVazio ? null : (int)$rawLimit;
+    if ($limit === null || $limit <= 0) {
+        return ['limit' => null, 'hours' => null];
+    }
+
+    $hours = ($rawHours === null || $rawHours === '') ? 24 : (int)$rawHours;
+    if ($hours <= 0) $hours = 24;
+
+    return ['limit' => $limit, 'hours' => $hours];
 }
 
 function createUser(): void
@@ -62,8 +106,18 @@ function createUser(): void
         jsonResponse(409, ['error' => 'Já existe um usuário com este email.']);
     }
 
-    $stmt = $db->prepare('INSERT INTO users (name, email, password, role, active) VALUES (?, ?, ?, ?, 1)');
-    $stmt->execute([$name, $email, $password, $role]);
+    // Cota de reanálise (opcional no formulário). Só entra no INSERT se as colunas existirem.
+    $quota = normalizeUserQuota($input);
+    $quotaCols = hasUserQuotaColumns($db) ? ', reanalysis_limit, reanalysis_window_hours' : '';
+    $quotaVals = $quotaCols ? ', ?, ?' : '';
+    $params = [$name, $email, $password, $role];
+    if ($quotaCols) {
+        $params[] = $quota['limit'];
+        $params[] = $quota['hours'];
+    }
+
+    $stmt = $db->prepare("INSERT INTO users (name, email, password, role, active{$quotaCols}) VALUES (?, ?, ?, ?, 1{$quotaVals})");
+    $stmt->execute($params);
 
     $newId = (int)$db->lastInsertId();
 
@@ -103,13 +157,25 @@ function updateUser(): void
         jsonResponse(409, ['error' => 'Já existe um usuário com este email.']);
     }
 
+    // Cota de reanálise. Campo AUSENTE do payload = mantém o valor atual (mesmo padrão dos
+    // outros campos aqui, `$input['x'] ?? $user['x']`); presente e vazio = limpa (sem limite).
+    // Sem essa distinção, um cliente que não mandasse os campos apagaria a cota em silêncio.
+    $temQuotaNoPayload = array_key_exists('reanalysis_limit', $input)
+        || array_key_exists('reanalysis_window_hours', $input);
+    $quota = $temQuotaNoPayload
+        ? normalizeUserQuota($input)
+        : ['limit' => $user['reanalysis_limit'] ?? null, 'hours' => $user['reanalysis_window_hours'] ?? null];
+
+    $quotaSet = hasUserQuotaColumns($db) ? ', reanalysis_limit = ?, reanalysis_window_hours = ?' : '';
+    $quotaParams = $quotaSet ? [$quota['limit'], $quota['hours']] : [];
+
     if ($password) {
-        $stmt = $db->prepare('UPDATE users SET name = ?, email = ?, password = ?, role = ? WHERE id = ?');
-        $stmt->execute([$name, $email, $password, $role, $id]);
+        $stmt = $db->prepare("UPDATE users SET name = ?, email = ?, password = ?, role = ?{$quotaSet} WHERE id = ?");
+        $stmt->execute(array_merge([$name, $email, $password, $role], $quotaParams, [$id]));
     }
     else {
-        $stmt = $db->prepare('UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?');
-        $stmt->execute([$name, $email, $role, $id]);
+        $stmt = $db->prepare("UPDATE users SET name = ?, email = ?, role = ?{$quotaSet} WHERE id = ?");
+        $stmt->execute(array_merge([$name, $email, $role], $quotaParams, [$id]));
     }
 
     jsonResponse(200, ['message' => 'Usuário atualizado.']);

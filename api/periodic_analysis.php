@@ -2,26 +2,113 @@
 // ============================================
 //  ArticleHub — Periodic Analysis API
 //  LEITURA: todos os perfis autenticados.
-//  ESCRITA (reanálise): ver requireReanalyzePermission() logo abaixo — hoje é
-//  liberada para todos por decisão explícita, à espera de um controle próprio.
+//  ESCRITA (reanálise): ver requireReanalyzePermission() logo abaixo — liberada para todos
+//  por decisão explícita, mas sujeita à COTA por usuário (reanalysisQuota).
 // ============================================
 require_once __DIR__ . '/config.php';
 
 // A view de análise periódica é acessível a todos os perfis (não é mais admin-only).
-// O valor devolvido não é usado aqui (as rotas não precisam do usuário); a chamada é o gate.
-requireAuth();
+// O usuário é guardado porque a rota GET ?quota=1 precisa dele.
+$user = requireAuth();
 
 /**
- * Quem pode disparar reanálise (POST action=reanalyze|reanalyze_bulk).
+ * Quem pode disparar reanálise (POST action=reanalyze|reanalyze_bulk) e se ainda cabe na
+ * cota dele.
  *
- * POR ENQUANTO: qualquer usuário autenticado — decisão explícita do time, que vai
- * desenvolver um controle próprio mais tarde. Este é o ÚNICO ponto a mudar para fechar
- * a escrita (ex.: trocar o corpo por `return requireRole('admin');`, ou a regra que
- * vier), sem tocar em mais nada do arquivo.
+ * PERMISSÃO: qualquer usuário autenticado — decisão explícita do time. Este é o ÚNICO ponto
+ * a mudar para fechar a escrita por papel (ex.: trocar o corpo por `return requireRole('admin');`).
+ *
+ * COTA: o controle por usuário JÁ vive aqui — assertReanalysisQuota() recusa com 429 antes de
+ * qualquer INSERT. A cota é configurada pelo admin por usuário (users.reanalysis_limit +
+ * users.reanalysis_window_hours).
+ *
+ * @param int $requested quantas linhas este pedido vai criar (a cota consome uma por post).
  */
-function requireReanalyzePermission(): array
+function requireReanalyzePermission(int $requested = 1): array
 {
-    return requireAuth();
+    $user = requireAuth();
+    assertReanalysisQuota(getDB(), $user, $requested);
+    return $user;
+}
+
+/**
+ * As colunas da cota existem neste banco? Não há migrations no projeto, então cada uso confere
+ * antes. Sem elas a reanálise segue funcionando — só não há cota a aplicar.
+ */
+function hasReanalysisQuotaColumns(PDO $db): bool
+{
+    return (bool)$db->query("SHOW COLUMNS FROM users LIKE 'reanalysis_limit'")->fetch()
+        && (bool)$db->query("SHOW COLUMNS FROM users LIKE 'reanalysis_window_hours'")->fetch();
+}
+
+/**
+ * Cota de reanálise do usuário: quanto ele já pediu na janela e quanto resta.
+ *
+ * Devolve ['limit' => ?int, 'hours' => ?int, 'used' => int, 'remaining' => ?int].
+ * `limit` e `remaining` NULL = sem limite configurado.
+ *
+ * A contagem sai de periodic_reanalysis_log (uma linha por post reanalisado, gravada no POST)
+ * dentro de uma JANELA MÓVEL — `NOW() - INTERVAL N HOUR`. Janela de CALENDÁRIO zeraria à
+ * meia-noite: daria para pedir a cota inteira às 23h59 e de novo às 00h01.
+ *
+ * A comparação de tempo acontece inteira no banco (NOW() e created_at no mesmo relógio), então
+ * não sofre o skew de fuso que motivou a regra de nunca gerar created_at no PHP.
+ */
+function reanalysisQuota(PDO $db, array $user): array
+{
+    $semLimite = ['limit' => null, 'hours' => null, 'used' => 0, 'remaining' => null];
+
+    // Sem as colunas não há cota configurada; sem a tabela de log não há o que contar.
+    if (!hasReanalysisQuotaColumns($db)) return $semLimite;
+    if (!$db->query("SHOW TABLES LIKE 'periodic_reanalysis_log'")->fetch()) return $semLimite;
+
+    $stmt = $db->prepare('SELECT reanalysis_limit, reanalysis_window_hours FROM users WHERE id = ?');
+    $stmt->execute([(int)$user['id']]);
+    $row = $stmt->fetch();
+
+    $limit = ($row && $row['reanalysis_limit'] !== null) ? (int)$row['reanalysis_limit'] : null;
+    if ($limit === null || $limit <= 0) return $semLimite;
+
+    // Limite informado sem janela válida: assume 24h, que é o caso comum ("N por dia").
+    $hours = ($row['reanalysis_window_hours'] !== null && (int)$row['reanalysis_window_hours'] > 0)
+        ? (int)$row['reanalysis_window_hours']
+        : 24;
+
+    // $hours é int validado (> 0) e vai INTERPOLADO de propósito: `INTERVAL ? HOUR` depende de
+    // como o driver lida com placeholder dentro de INTERVAL, e um erro aí derrubaria toda
+    // reanálise. Sendo int, não há o que injetar. O user_id segue parametrizado.
+    $stmt = $db->prepare(
+        "SELECT COUNT(*) FROM periodic_reanalysis_log
+         WHERE user_id = ? AND created_at >= (NOW() - INTERVAL $hours HOUR)"
+    );
+    $stmt->execute([(int)$user['id']]);
+    $used = (int)$stmt->fetchColumn();
+
+    return [
+        'limit' => $limit,
+        'hours' => $hours,
+        'used' => $used,
+        'remaining' => max(0, $limit - $used),
+    ];
+}
+
+/**
+ * Recusa com 429 quando o pedido estoura a cota. Roda ANTES de qualquer INSERT, então um
+ * pedido barrado não deixa análise criada nem linha no log.
+ */
+function assertReanalysisQuota(PDO $db, array $user, int $requested): void
+{
+    if ($requested <= 0) return;
+
+    $q = reanalysisQuota($db, $user);
+    if ($q['remaining'] === null) return; // sem limite configurado
+
+    if ($requested > $q['remaining']) {
+        $msg = $q['remaining'] > 0
+            ? "Limite de reanálises atingido: restam {$q['remaining']} de {$q['limit']} a cada {$q['hours']}h."
+            : "Limite de reanálises atingido: você já usou as {$q['limit']} permitidas a cada {$q['hours']}h.";
+        jsonResponse(429, ['error' => $msg, 'quota' => $q]);
+    }
 }
 
 /**
@@ -89,6 +176,13 @@ if ($method === 'GET') {
             );
             jsonResponse(200, $stmt->fetchAll(PDO::FETCH_ASSOC));
         }
+    }
+
+    // Cota de reanálise do usuário LOGADO (?quota=1). Fica fora do bloco `distinct` de
+    // propósito: não é uma lista de opções de filtro, é o estado da cota dele — e quem lê
+    // é o próprio usuário, não um admin.
+    if (isset($_GET['quota'])) {
+        jsonResponse(200, reanalysisQuota($db, $user));
     }
 
     // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx&id_post=123&comments=with&solicitante=auto
@@ -295,12 +389,21 @@ if ($method === 'GET') {
 }
 
 if ($method === 'POST') {
-    // Ponto único da permissão de escrita (hoje permissivo de propósito).
-    // Guarda o usuário: o id dele vai como solicitante_id da linha criada.
-    $user = requireReanalyzePermission();
-
+    // getInput() vem ANTES do gate: a cota precisa saber quantas linhas o pedido cria, e isso
+    // só existe depois de ler o corpo. Ler o corpo de um pedido não autenticado é inócuo — o
+    // gate logo abaixo continua devolvendo 401 sem executar nada.
     $input = getInput();
     $action = $input['action'] ?? '';
+
+    // Quantas linhas este pedido cria — é o que a cota consome (uma por post reanalisado).
+    // No lote vale o tamanho do array enviado, mesmo que algum item acabe pulado pela validação
+    // mais abaixo: contar a mais erra para o lado seguro de um limite.
+    $requested = $action === 'reanalyze_bulk'
+        ? (is_array($input['items'] ?? null) ? count($input['items']) : 0)
+        : ($action === 'reanalyze' ? 1 : 0);
+
+    // Ponto único da permissão E da cota de escrita.
+    $user = requireReanalyzePermission($requested);
 
     // Colunas opcionais: cada uma só entra no INSERT se existir no banco, para o endpoint
     // não quebrar num ambiente onde a migração ainda não rodou. Montar a lista de colunas

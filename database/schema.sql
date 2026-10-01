@@ -22,6 +22,12 @@ CREATE TABLE IF NOT EXISTS users (
   password    VARCHAR(255)    NOT NULL COMMENT 'Hash bcrypt',
   role        ENUM('admin','gestor','revisor','redator') NOT NULL DEFAULT 'redator',
   active      TINYINT(1)      NOT NULL DEFAULT 1,
+  -- Cota de reanálise na Análise Periódica, configurada pelo admin por usuário.
+  -- NULL nas DUAS = sem limite (padrão, para nada mudar nos usuários já existentes).
+  -- A contagem sai de periodic_reanalysis_log numa JANELA MÓVEL (últimas N horas),
+  -- e não de calendário — janela de calendário zeraria à meia-noite.
+  reanalysis_limit        INT UNSIGNED DEFAULT NULL COMMENT 'Reanálises permitidas na janela; NULL = sem limite',
+  reanalysis_window_hours INT UNSIGNED DEFAULT NULL COMMENT 'Tamanho da janela em horas; NULL = sem limite',
   created_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -515,6 +521,12 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 --   INDEX idx_prl_created (created_at),
 --   INDEX idx_prl_analysis (analysis_id)
 -- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- users.reanalysis_limit + users.reanalysis_window_hours (cota de reanálise por usuário;
+-- NULL nas duas = sem limite). A api/periodic_analysis.php tolera as colunas ausentes
+-- (SHOW COLUMNS), então a reanálise continua funcionando sem elas — só sem cota.
+-- ALTER TABLE users ADD COLUMN reanalysis_limit INT UNSIGNED DEFAULT NULL COMMENT 'Reanálises permitidas na janela; NULL = sem limite';
+-- ALTER TABLE users ADD COLUMN reanalysis_window_hours INT UNSIGNED DEFAULT NULL COMMENT 'Tamanho da janela em horas; NULL = sem limite';
 
 -- app_settings (criada automaticamente pela api/settings.php no primeiro GET/PUT;
 -- script manual equivalente à definição da tabela no topo deste arquivo)

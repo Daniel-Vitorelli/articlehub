@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.3";
+  const APP_VERSION = "1.7.4";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -70,6 +70,11 @@
   // dataset em memória — a regra é que a lista de opções sai da MESMA camada em que o
   // filtro roda: domínio/tipo filtram no cliente, solicitante filtra no servidor.
   let periodicSolicitanteOptionsCache = null;
+
+  // Cota de reanálise do usuário LOGADO: { limit, hours, used, remaining }.
+  // `remaining === null` = sem limite configurado. Vem do servidor porque depende da janela
+  // móvel e do log de pedidos (periodic_reanalysis_log) — o front não tem como calcular.
+  let periodicQuota = null;
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -418,6 +423,53 @@
     return loadPeriodicSolicitanteOptions();
   }
 
+  // ---- Cota de reanálise ----
+  // Ponto único: TODO lugar que precisa decidir "ainda pode?" passa por aqui. Devolve o
+  // restante, ou null quando não há limite (usuário sem cota configurada).
+  function periodicRemaining() {
+    if (!periodicQuota) return null;
+    const rem = periodicQuota.remaining;
+    if (rem === null || rem === undefined) return null;
+    return Number(rem);
+  }
+
+  // Quantas linhas AINDA cabem na cota, dado o que já está selecionado.
+  // Devolve null quando não há limite (cabe tudo). Ponto único da regra: o checkbox de linha
+  // e o "Todas" decidem por aqui, para os dois nunca divergirem.
+  function periodicQuotaRoom(jaSelecionadas) {
+    const rem = periodicRemaining();
+    if (rem === null) return null;
+    return Math.max(0, rem - Number(jaSelecionadas || 0));
+  }
+
+  // Mostra o restante na barra de lote. Sem limite, esconde o aviso em vez de escrever
+  // "ilimitado" — quem não tem cota não precisa ver nada sobre cota.
+  function renderPeriodicQuotaHint() {
+    const el = $("#periodicQuotaHint");
+    if (!el) return;
+    const rem = periodicRemaining();
+    if (rem === null) {
+      el.textContent = "";
+      el.style.display = "none";
+      return;
+    }
+    el.style.display = "";
+    el.textContent =
+      rem > 0
+        ? `Restam ${rem} de ${periodicQuota.limit} reanálises a cada ${periodicQuota.hours}h`
+        : `Cota de reanálises esgotada (${periodicQuota.limit} a cada ${periodicQuota.hours}h)`;
+    el.style.color = rem > 0 ? "var(--text-muted)" : "var(--accent-danger, #e74c3c)";
+  }
+
+  function loadPeriodicQuota() {
+    return apiGet("periodic_analysis.php?quota=1")
+      .then((data) => {
+        periodicQuota = data && typeof data === "object" ? data : null;
+        renderPeriodicQuotaHint();
+      })
+      .catch(() => {}); // silencioso: sem cota o front só não limita nada
+  }
+
   // Agrupa rows da periodic_analysis em memória (latest por dominio+id_post)
   function buildPeriodicInMemory(raw) {
     const rows = Array.isArray(raw) ? raw : (raw && raw.data ? raw.data : []);
@@ -630,6 +682,8 @@
   function ensurePeriodicLoaded() {
     ensurePeriodicCommentCounts();
     ensurePeriodicSolicitanteOptions();
+    // A cota é buscada uma vez e renovada depois de cada reanálise e em cada reload.
+    if (!periodicQuota) loadPeriodicQuota();
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
     periodicLoadedPromise = apiGet(periodicPageUrl(0))
@@ -701,6 +755,8 @@
       // cada grupo), então um reload pode ter criado um solicitante novo.
       periodicSolicitanteOptionsCache = null;
       loadPeriodicSolicitanteOptions();
+      // A cota pode ter sido consumida em outra sessão/aba: relê junto com os dados.
+      loadPeriodicQuota();
     } catch (e) {
       console.error("Falha ao recarregar periódica:", e);
     }
@@ -2670,6 +2726,14 @@
     const key = modal?.dataset?.periodicKey;
     if (!key) return;
 
+    // Cota: bloqueia antes de qualquer coisa, para não criar a linha otimista e ter de
+    // desfazê-la. O servidor também recusa (429) — aqui é para o usuário saber na hora.
+    const rem = periodicRemaining();
+    if (rem !== null && rem <= 0) {
+      showToast("Cota de reanálises esgotada neste período.", "error");
+      return;
+    }
+
     const group = periodicAnalysisGroups.find((g) => g.key === key);
     if (!group || !group.sorted.length) return;
 
@@ -2794,8 +2858,13 @@
         if (vRow) vRow.id = res.id;
         const aRow = periodicAnalysisAll.find((r) => r.id === tempId);
         if (aRow) aRow.id = res.id;
+        // O pedido consumiu cota: relê para o aviso da barra refletir o novo restante.
+        loadPeriodicQuota();
       })
       .catch((err) => {
+        // 429 = cota estourada no servidor (o front pode ter ficado desatualizado).
+        // Relê a cota para o aviso voltar a bater com a realidade.
+        if (String(err?.message || "").includes("Limite de reanálises")) loadPeriodicQuota();
         // Rollback do otimista: remove a linha fantasma e restaura a anterior.
         // Busca pelos arrays VIVOS (por tempId), pois um reload pode ter trocado os objetos.
         const liveGroup = periodicAnalysisGroups.find((gg) => gg.key === key);
@@ -3078,6 +3147,8 @@
           const aRow = periodicAnalysisAll.find((r) => r.id === tempId);
           if (aRow) aRow.id = realId;
         });
+        // O lote consumiu cota (uma por post): relê para o aviso refletir o novo restante.
+        loadPeriodicQuota();
       })
       .catch(() => {
         // Fallback silencioso p/ backends sem o endpoint bulk: 1 POST por item, sem travar UI.
@@ -3112,6 +3183,8 @@
             rollbackBulkKeys(failKeys);
             showToast(`Falha ao reanalisar: ${failKeys.length} erro(s).`, "error");
           }
+          // Mesmo no fallback os que deram certo consumiram cota.
+          loadPeriodicQuota();
         })();
       });
   }
@@ -3488,9 +3561,23 @@
         e.target.checked = false;
         return;
       }
+
+      // Cota: "Todas" marca só o que cabe no restante e avisa que o resto ficou de fora.
+      const room = periodicQuotaRoom(0);
+      const rem = periodicRemaining();
+      if (room !== null && room <= 0) {
+        e.target.checked = false;
+        e.target.indeterminate = false;
+        showToast("Cota de reanálises esgotada neste período.", "error");
+        updateBulkUI();
+        return;
+      }
+      const quantos = room === null ? total : Math.min(total, room);
       if (
         !confirm(
-          `Selecionar todas as ${total} análises filtradas para reanálise em massa?`,
+          quantos < total
+            ? `Selecionar ${quantos} de ${total} análises? Sua cota permite ${rem} neste período.`
+            : `Selecionar todas as ${total} análises filtradas para reanálise em massa?`,
         )
       ) {
         e.target.checked = false;
@@ -3498,27 +3585,50 @@
         updateBulkUI();
         return;
       }
-      periodicAnalysisVisible.forEach((r) => {
+      // Só as `quantos` primeiras — a ordem da lista visível decide quais entram.
+      periodicAnalysisVisible.slice(0, quantos).forEach((r) => {
         selectedPeriodicKeys.add(`${r.dominio}::${r.id_post ?? ""}`);
       });
+      // Marca pela fonte de verdade (o Set), não por "todos os checkboxes do DOM".
       document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
-        cb.checked = true;
+        const marcado = selectedPeriodicKeys.has(cb.dataset.periodicKey);
+        cb.checked = marcado;
         const tr = cb.closest("tr");
-        if (tr) tr.classList.add("is-selected");
+        if (tr) tr.classList.toggle("is-selected", marcado);
       });
+      if (quantos < total) {
+        showToast(`Selecionadas ${quantos} — o limite do período impede marcar mais.`, "error");
+      }
       updateBulkUI();
     });
   const periodicBodyForCheck = document.getElementById("periodicAnalysisBody");
   if (periodicBodyForCheck) {
     periodicBodyForCheck.addEventListener("change", (e) => {
-      const cb = e.target.closest(".periodic-checkbox");
-      if (!cb) return;
-      const k = cb.dataset.periodicKey;
-      const tr = cb.closest("tr");
-      if (cb.checked) {
-        selectedPeriodicKeys.add(k);
-        if (tr) tr.classList.add("is-selected");
-      } else {
+    const cb = e.target.closest(".periodic-checkbox");
+    if (!cb) return;
+    const k = cb.dataset.periodicKey;
+    const tr = cb.closest("tr");
+    if (cb.checked) {
+      // Cota: barra a marcação que passaria do restante. O servidor também recusa (429) —
+      // aqui é para o usuário não montar uma seleção que vai ser rejeitada no fim.
+      const room = periodicQuotaRoom(selectedPeriodicKeys.size);
+      if (room !== null && room < 1) {
+        cb.checked = false;
+        if (tr) tr.classList.remove("is-selected");
+        const rem = periodicRemaining();
+        showToast(
+          rem > 0
+            ? `Cota de reanálises: restam ${rem} neste período — desmarque algo antes de escolher mais.`
+            : "Cota de reanálises esgotada neste período.",
+          "error",
+        );
+        updateBulkUI();
+        e.stopPropagation();
+        return;
+      }
+      selectedPeriodicKeys.add(k);
+      if (tr) tr.classList.add("is-selected");
+    } else {
         selectedPeriodicKeys.delete(k);
         // Linha desmarcada também perde o foco (is-focused).
         if (tr) tr.classList.remove("is-selected", "is-focused");
@@ -4460,6 +4570,12 @@
     pwField.required = false;
     pwField.value = "";
     pwField.placeholder = "Deixe vazio para manter";
+    // Cota de reanálise: `!= null` (frouxo) cobre null E undefined — a coluna pode não existir
+    // num banco sem a migração, e nesse caso o campo fica vazio em vez de "undefined".
+    form.querySelector('[name="reanalysis_limit"]').value =
+      u.reanalysis_limit != null ? u.reanalysis_limit : "";
+    form.querySelector('[name="reanalysis_window_hours"]').value =
+      u.reanalysis_window_hours != null ? u.reanalysis_window_hours : "";
     $("#userEditId").value = u.id;
     openModal("modalUser");
   }
@@ -4478,12 +4594,19 @@
     const editId = Number($("#userEditId").value);
 
     try {
+      // Cota de reanálise: vai SEMPRE no payload (mesmo vazia), porque o PUT trata campo
+      // ausente como "mantém o valor atual" — mandar "" é o que limpa a cota.
+      const quota = {
+        reanalysis_limit: fd.get("reanalysis_limit"),
+        reanalysis_window_hours: fd.get("reanalysis_window_hours"),
+      };
       if (editId) {
         const data = {
           id: editId,
           name: fd.get("name"),
           email: fd.get("email"),
           role: fd.get("role"),
+          ...quota,
         };
         if (fd.get("password")) data.password = fd.get("password");
         await apiPut("users.php", data);
@@ -4493,6 +4616,7 @@
           email: fd.get("email"),
           password: fd.get("password"),
           role: fd.get("role"),
+          ...quota,
         });
       }
       closeModal("modalUser");
