@@ -98,10 +98,14 @@ if ($method === 'GET') {
         }
 
         // Dados paginados (usa índice idx_periodic_group_ordered para ORDER BY)
-        $dataSql = "SELECT pa.*, d.url AS dominio_url
+        // sol: nome de quem pediu a reanálise, vindo de users (LEFT JOIN porque
+        // solicitante_id é NULL nas linhas antigas e 0 nas automáticas do n8n — nenhum
+        // dos dois deve excluir a linha).
+        $dataSql = "SELECT pa.*, d.url AS dominio_url, sol.name AS solicitante_nome
                     FROM periodic_analysis pa
                     INNER JOIN $latestSub ON pa.dominio = latest.dominio AND pa.id_post <=> latest.id_post AND pa.id = latest.max_id
                     LEFT JOIN domains d ON d.blog_name = pa.dominio
+                    LEFT JOIN users sol ON sol.id = pa.solicitante_id
                     $whereSql
                     ORDER BY pa.created_at DESC, pa.id DESC
                     LIMIT ? OFFSET ?";
@@ -170,12 +174,14 @@ if ($method === 'GET') {
             
             // MySQL 8+: ROW_NUMBER() para pegar top 10 por grupo direto no SQL (evita processamento PHP)
             $stmt = $db->prepare("
-                SELECT dominio, id_post, id, created_at, status_compliance, resumo_analise
+                SELECT dominio, id_post, id, created_at, status_compliance, resumo_analise, solicitante_id, solicitante_nome
                 FROM (
                     SELECT 
                         pa.dominio, pa.id_post, pa.id, pa.created_at, pa.status_compliance, pa.resumo_analise,
+                        pa.solicitante_id, sol.name AS solicitante_nome,
                         ROW_NUMBER() OVER (PARTITION BY pa.dominio, pa.id_post ORDER BY pa.created_at DESC, pa.id DESC) as rn
                     FROM periodic_analysis pa
+                    LEFT JOIN users sol ON sol.id = pa.solicitante_id
                     WHERE $whereSql
                 ) t
                 WHERE t.rn <= 10
@@ -202,10 +208,12 @@ if ($method === 'GET') {
         $idPostH = trim($_GET['id_post']);
         if ($idPostH === '') $idPostH = null; // coluna INT NULL: '' coagia para 0 no MySQL
         $stmt = $db->prepare(
-            'SELECT id, created_at, status_compliance, resumo_analise
-             FROM periodic_analysis
-             WHERE dominio = ? AND id_post <=> ?
-             ORDER BY created_at DESC, id DESC
+            'SELECT pa.id, pa.created_at, pa.status_compliance, pa.resumo_analise,
+                    pa.solicitante_id, sol.name AS solicitante_nome
+             FROM periodic_analysis pa
+             LEFT JOIN users sol ON sol.id = pa.solicitante_id
+             WHERE pa.dominio = ? AND pa.id_post <=> ?
+             ORDER BY pa.created_at DESC, pa.id DESC
              LIMIT 50'
         );
         $stmt->execute([$dominioH, $idPostH]);
@@ -213,9 +221,10 @@ if ($method === 'GET') {
     }
 
     $stmt = $db->query(
-        'SELECT pa.*, d.url AS dominio_url
+        'SELECT pa.*, d.url AS dominio_url, sol.name AS solicitante_nome
          FROM periodic_analysis pa
          LEFT JOIN domains d ON d.blog_name = pa.dominio
+         LEFT JOIN users sol ON sol.id = pa.solicitante_id
          ORDER BY pa.created_at DESC, pa.id DESC'
     );
     jsonResponse(200, $stmt->fetchAll());
@@ -223,10 +232,26 @@ if ($method === 'GET') {
 
 if ($method === 'POST') {
     // Ponto único da permissão de escrita (hoje permissivo de propósito).
-    requireReanalyzePermission();
+    // Guarda o usuário: o id dele vai como solicitante_id da linha criada.
+    $user = requireReanalyzePermission();
 
     $input = getInput();
     $action = $input['action'] ?? '';
+
+    // Colunas opcionais: cada uma só entra no INSERT se existir no banco, para o endpoint
+    // não quebrar num ambiente onde a migração ainda não rodou. Montar a lista de colunas
+    // uma vez evita 4 blocos quase idênticos (com/sem publish_status × com/sem solicitante_id).
+    $hasPublishStatus = (bool)$db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'publish_status'")->fetch();
+    $hasSolicitanteId = (bool)$db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'solicitante_id'")->fetch();
+
+    $insertCols = ['id_post', 'post_type', 'status_compliance', 'resumo_analise', 'dominio'];
+    if ($hasPublishStatus) $insertCols[] = 'publish_status';
+    if ($hasSolicitanteId) $insertCols[] = 'solicitante_id';
+    $insertSql = 'INSERT INTO periodic_analysis (' . implode(', ', $insertCols) . ') VALUES ('
+        . implode(', ', array_fill(0, count($insertCols), '?')) . ')';
+
+    // Quem pediu: sempre da SESSÃO, nunca do cliente (senão daria para forjar autoria).
+    $solicitanteId = (int)$user['id'];
 
     if ($action === 'reanalyze_bulk') {
         $items = $input['items'] ?? null;
@@ -240,20 +265,7 @@ if ($method === 'POST') {
         // created_at propositalmente omitido: usa DEFAULT CURRENT_TIMESTAMP do banco,
         // consistente com as linhas antigas (gerar no PHP em America/Sao_Paulo e inserir
         // em coluna TIMESTAMP causava skew de ~3h conforme o time_zone da sessão).
-        $stmt = $db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'publish_status'");
-        $hasPublishStatus = (bool)$stmt->fetch();
-
-        if ($hasPublishStatus) {
-            $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, publish_status)
-                 VALUES (?, ?, ?, ?, ?, ?)'
-            );
-        } else {
-            $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-        }
+        $stmt = $db->prepare($insertSql);
 
         $ids = [];
         $keys = [];
@@ -263,24 +275,17 @@ if ($method === 'POST') {
                 if (empty($it['id_post']) && ($it['id_post'] ?? null) !== '0' && ($it['id_post'] ?? null) !== 0) continue;
                 if (empty($it['post_type'])) continue;
                 if (empty($it['dominio'])) continue;
-                if ($hasPublishStatus) {
-                    $stmt->execute([
-                        $it['id_post'],
-                        $it['post_type'],
-                        'nao_analisado',
-                        'esperando re-analise',
-                        $it['dominio'],
-                        $it['publish_status'] ?? 'draft'
-                    ]);
-                } else {
-                    $stmt->execute([
-                        $it['id_post'],
-                        $it['post_type'],
-                        'nao_analisado',
-                        'esperando re-analise',
-                        $it['dominio']
-                    ]);
-                }
+                // Mesma ordem de $insertCols.
+                $params = [
+                    $it['id_post'],
+                    $it['post_type'],
+                    'nao_analisado',
+                    'esperando re-analise',
+                    $it['dominio'],
+                ];
+                if ($hasPublishStatus) $params[] = $it['publish_status'] ?? 'draft';
+                if ($hasSolicitanteId) $params[] = $solicitanteId;
+                $stmt->execute($params);
                 $ids[] = (int)$db->lastInsertId();
                 $keys[] = $it['dominio'] . '::' . $it['id_post'];
             }
@@ -311,38 +316,19 @@ if ($method === 'POST') {
 
         // created_at omitido de propósito: DEFAULT CURRENT_TIMESTAMP do banco
         // (ver comentário no reanalyze_bulk sobre o skew de fuso).
-        // Verificar se coluna publish_status existe na tabela
-        $stmt = $db->query("SHOW COLUMNS FROM periodic_analysis LIKE 'publish_status'");
-        $hasPublishStatus = (bool)$stmt->fetch();
+        // Mesma ordem de $insertCols (montado no topo do bloco POST).
+        $params = [
+            $input['id_post'],
+            $input['post_type'],
+            'nao_analisado',
+            'esperando re-analise',
+            $input['dominio'],
+        ];
+        if ($hasPublishStatus) $params[] = $input['publish_status'] ?? 'draft';
+        if ($hasSolicitanteId) $params[] = $solicitanteId;
 
-        if ($hasPublishStatus) {
-            $publishStatus = $input['publish_status'] ?? 'draft';
-            $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio, publish_status)
-                 VALUES (?, ?, ?, ?, ?, ?)'
-            );
-            $stmt->execute([
-                $input['id_post'],
-                $input['post_type'],
-                'nao_analisado',
-                'esperando re-analise',
-                $input['dominio'],
-                $publishStatus
-            ]);
-        } else {
-            // Fallback sem publish_status (coluna não existe no banco)
-            $stmt = $db->prepare(
-                'INSERT INTO periodic_analysis (id_post, post_type, status_compliance, resumo_analise, dominio)
-                 VALUES (?, ?, ?, ?, ?)'
-            );
-            $stmt->execute([
-                $input['id_post'],
-                $input['post_type'],
-                'nao_analisado',
-                'esperando re-analise',
-                $input['dominio']
-            ]);
-        }
+        $stmt = $db->prepare($insertSql);
+        $stmt->execute($params);
 
         $newId = (int)$db->lastInsertId();
 

@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.0";
+  const APP_VERSION = "1.7.1";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -1812,6 +1812,37 @@
     return `<div class="compliance-req-info">${html}</div>`;
   }
 
+  // ---- Solicitante da análise periódica ----
+  // Diferente de Solicitações (que guarda o NOME desnormalizado em `solicitante_compliance`),
+  // aqui a linha guarda `solicitante_id` e o nome vem da tabela users — o servidor devolve
+  // `solicitante_nome` no LEFT JOIN.
+
+  // solicitante_id = 0 é a análise AUTOMÁTICA do fluxo do n8n, não pedida por ninguém.
+  // O teste de 0 precisa ser EXPLÍCITO e por TIPO, não `!value`: `Number(null) === 0`,
+  // `Number("") === 0` e `Number(false) === 0` são todos verdadeiros, e os três significam
+  // "sem solicitante" (NULL nas linhas anteriores à coluna, "" quando o atributo nem
+  // existe no DOM). Com `!value` eles apareceriam como "auto".
+  function isPeriodicSolicitanteAuto(value) {
+    if (typeof value !== "number" && typeof value !== "string") return false;
+    if (value === "") return false;
+    return Number(value) === 0;
+  }
+
+  const PERIODIC_AUTO_TIP =
+    "Análise automática feita pelo fluxo do n8n — não foi solicitada por um usuário.";
+
+  // Devolve "" quando não há o que mostrar (solicitante_id NULL ou usuário inexistente),
+  // o que também limpa a linha ao trocar de um artigo com solicitante para um sem.
+  function periodicSolicitanteHtml(item) {
+    if (!item) return "";
+    if (isPeriodicSolicitanteAuto(item.solicitante_id)) {
+      return `<div class="compliance-req-info"><span class="compliance-req-who">por <span class="solicitante-auto" title="${escapeAttr(PERIODIC_AUTO_TIP)}">auto</span></span></div>`;
+    }
+    const nome = String(item.solicitante_nome || "").trim();
+    if (!nome) return "";
+    return `<div class="compliance-req-info"><span class="compliance-req-who">por ${escapeHtml(nome)}</span></div>`;
+  }
+
   function renderComplianceResumo(text) {
     const raw = String(text || "").trim();
     if (!raw) return '<p class="compliance-section-body" style="color:var(--text-muted)">—</p>';
@@ -1987,6 +2018,13 @@
         const status = escapeHtml(h.status_compliance)
           ? `<span class="status-badge ${escapeHtml(h.status_compliance)}">${complianceStatusLabel(h.status_compliance)}</span>`
           : "—";
+        // escapeAttr(0) devolve "" (o helper trata 0 como vazio), então a conversão precisa
+        // vir ANTES: sem isso, a análise automática (solicitante_id = 0) chegaria ao
+        // dataset como "" e perderia a marcação de "auto" na expansão.
+        const solIdAttr =
+          h.solicitante_id === null || h.solicitante_id === undefined
+            ? ""
+            : String(h.solicitante_id);
         return `
         <tr class="compliance-history-row" tabindex="0"
             data-resumo="${escapeAttr(h.resumo_analise || "")}"
@@ -1994,6 +2032,8 @@
             data-date="${escapeAttr(formatDateTime(h.created_at))}"
             data-solicitacao="${escapeAttr(h.solicitacao_compliance || "")}"
             data-solicitante="${escapeAttr(h.solicitante_compliance || "")}"
+            data-solicitante-id="${escapeAttr(solIdAttr)}"
+            data-solicitante-nome="${escapeAttr(h.solicitante_nome || "")}"
             title="Clique para ver o resumo">
           <td style="white-space:nowrap">${formatDateTime(h.created_at)}</td>
           <td>${status}</td>
@@ -2106,10 +2146,11 @@
         ? latest.resumo_analise : "—";
       resumoEl.innerHTML = renderComplianceResumo(txt);
     }
-    // Análise periódica não tem solicitacao/solicitante: limpa a linha para não
+    // Solicitante da reanálise (nome vindo de users; id 0 = análise automática do n8n).
+    // Devolve "" quando não há solicitante, o que também limpa a linha para não
     // reaproveitar o valor de um artigo aberto anteriormente.
     const infoElPeriodic = $("#complianceRequestInfo");
-    if (infoElPeriodic) infoElPeriodic.innerHTML = complianceRequestInfo(latest);
+    if (infoElPeriodic) infoElPeriodic.innerHTML = periodicSolicitanteHtml(latest);
     const btn = $("#btnResetCompliance");
     if (btn) {
       const hasData = !!latest && (latest.status_compliance || (latest.resumo_analise?.trim()));
@@ -2566,6 +2607,10 @@
       status_compliance: "nao_analisado",
       resumo_analise: "esperando re-analise",
       publish_status: payload.publish_status,
+      // Quem pediu: o próprio usuário logado. O nome vai junto para o resumo mostrar na
+      // hora, sem esperar o próximo reload trazer o `solicitante_nome` do JOIN.
+      solicitante_id: currentUser?.id,
+      solicitante_nome: currentUser?.name || "",
       created_at: createdAt,
     };
 
@@ -2580,6 +2625,10 @@
         created_at: oldLatest.created_at,
         status_compliance: oldLatest.status_compliance,
         resumo_analise: oldLatest.resumo_analise || "",
+        // O solicitante viaja junto: a análise que está virando histórico continua
+        // mostrando quem a pediu quando o usuário expandir a linha.
+        solicitante_id: oldLatest.solicitante_id,
+        solicitante_nome: oldLatest.solicitante_nome,
       });
       pushedHistory = true;
     }
@@ -2771,6 +2820,9 @@
         status_compliance: "nao_analisado",
         resumo_analise: "esperando re-analise",
         publish_status: latest.publish_status || "draft",
+        // Quem pediu: o próprio usuário logado (ver comentário em handlePeriodicReanalyze).
+        solicitante_id: currentUser?.id,
+        solicitante_nome: currentUser?.name || "",
         created_at: createdAt,
       };
       items.push({
@@ -2788,6 +2840,9 @@
           created_at: oldLatest.created_at,
           status_compliance: oldLatest.status_compliance,
           resumo_analise: oldLatest.resumo_analise || "",
+          // Mesmo motivo do caminho individual: o histórico mantém o solicitante.
+          solicitante_id: oldLatest.solicitante_id,
+          solicitante_nome: oldLatest.solicitante_nome,
         });
         const rb = rollbackByKey.get(key);
         if (rb) rb.pushedHistory = true;
@@ -2976,6 +3031,11 @@
     const date = row.dataset.date || "—";
     const solicitacao = row.dataset.solicitacao || "";
     const solicitante = row.dataset.solicitante || "";
+    // Análise periódica: o solicitante vem do JOIN com users (data-solicitante-id/nome).
+    // Nas linhas de Solicitações esses atributos não existem → "" → não renderiza nada
+    // aqui, porque o complianceRequestInfo abaixo já mostra o solicitante daquele fluxo.
+    const solPeriodicId = row.dataset.solicitanteId || "";
+    const solPeriodicNome = row.dataset.solicitanteNome || "";
 
     const meta = $("#complianceDetailMeta");
     if (meta) {
@@ -2984,7 +3044,11 @@
         (status
           ? `<span class="status-badge ${escapeHtml(status)}">${complianceStatusLabel(status)}</span>`
           : "") +
-        complianceRequestInfo({ solicitacao_compliance: solicitacao, solicitante_compliance: solicitante });
+        complianceRequestInfo({ solicitacao_compliance: solicitacao, solicitante_compliance: solicitante }) +
+        periodicSolicitanteHtml({
+          solicitante_id: solPeriodicId,
+          solicitante_nome: solPeriodicNome,
+        });
     }
 
     const body = $("#complianceDetailResumo");

@@ -1406,6 +1406,13 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   color: var(--text-muted);
   font-size: 0.72rem;
 }
+/* "auto" = análise automática do fluxo do n8n (solicitante_id = 0). O sublinhado
+   pontilhado e o cursor de ajuda sinalizam que há tooltip no hover — sem isso o
+   usuário não tem como descobrir que dá para passar o mouse. */
+.solicitante-auto {
+  cursor: help;
+  border-bottom: 1px dotted currentColor;
+}
 
 /* Corpo rico do resumo: listas, links, código, ênfase e espaçamento */
 #complianceResumo ul,
