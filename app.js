@@ -59,13 +59,17 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.1";
+  const APP_VERSION = "1.7.2";
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
   // Cache de opções de filtro (distinct) - buscadas uma vez por sessão
   let periodicDomainOptionsCache = null;
   let periodicTypeOptionsCache = null;
+  // Opções do filtro de solicitante. Diferente das duas acima, vêm do SERVIDOR e não do
+  // dataset em memória — a regra é que a lista de opções sai da MESMA camada em que o
+  // filtro roda: domínio/tipo filtram no cliente, solicitante filtra no servidor.
+  let periodicSolicitanteOptionsCache = null;
 
   // ---- Helpers ----
   const $ = (sel) => document.querySelector(sel);
@@ -286,17 +290,38 @@
     return /^\d+$/.test(String(term || "").trim());
   }
 
+  // Filtro de solicitante. Normaliza o valor do select para o id COMPARÁVEL, e devolve ""
+  // quando não há filtro (ou o valor é inválido).
+  //
+  // O token 'auto' e o id 0 são a MESMA coisa (análise automática do n8n): sem normalizar,
+  // comparar a string "auto" com o solicitante_id 0 que vem do banco nunca casaria e o
+  // filtro apareceria sempre vazio. Ponto único de verdade dos dois lados, como
+  // isValidIdPostTerm(): o backend aceita exatamente 'auto' ou dígitos (ctype_digit).
+  function solicitanteFilterId(value) {
+    // Cheque null/undefined EXPLICITAMENTE — `String(value || "")` engoliria o número 0
+    // (0 é falsy), e 0 é justamente a análise automática do n8n. Era assim que a opção
+    // "Automática (n8n)" sumia do select, já que o servidor devolve solicitante_id: 0.
+    if (value === null || value === undefined) return "";
+    const v = String(value).trim();
+    if (v === "auto") return "0";
+    return /^\d+$/.test(v) ? v : "";
+  }
+
   // Filtro de BACKEND: o que precisa de consulta ao servidor (o resto é filtrado em
-  // memória por periodicMatchesFilters). Ponto único — os dois controles compõem aqui,
+  // memória por periodicMatchesFilters). Ponto único — os controles compõem aqui,
   // então nunca se sobrescrevem ao mudar um com o outro já ativo.
   // O valor viaja em periodicServerFilter, que periodicPageUrl concatena em toda página.
   function buildPeriodicServerFilter() {
     const term = ($("#filterPeriodicIdPost")?.value || "").trim();
     const comments = $("#filterPeriodicComments")?.value || "";
+    const solicitante = ($("#filterPeriodicSolicitante")?.value || "").trim();
     let filter = "";
     if (isValidIdPostTerm(term)) filter += `&id_post=${encodeURIComponent(term)}`;
     // 'with' = só grupos com comentário; 'without' = só sem. Vazio = desativado.
     if (comments === "with" || comments === "without") filter += `&comments=${comments}`;
+    // Vai o valor CRU do select ('auto' ou o id): o guard é o solicitanteFilterId, que
+    // devolve "" para qualquer coisa fora de 'auto'/dígitos.
+    if (solicitanteFilterId(solicitante)) filter += `&solicitante=${encodeURIComponent(solicitante)}`;
     return filter;
   }
 
@@ -309,6 +334,7 @@
       type: $("#filterPeriodicType")?.value || "",
       domain: $("#filterPeriodicDomain")?.value || "",
       idPost: ($("#filterPeriodicIdPost")?.value || "").trim(),
+      solicitante: ($("#filterPeriodicSolicitante")?.value || "").trim(),
     };
   }
 
@@ -324,13 +350,22 @@
   // "com comentários" ativo, as linhas recém-chegadas seriam descartadas antes de os
   // totais carregarem — a lista apareceria vazia. O servidor já devolveu o conjunto
   // certo, então aqui basta não contradizê-lo.
+  //
+  // O filtro de SOLICITANTE (f.solicitante) é o caso oposto: o dado é síncrono
+  // (solicitante_id é coluna da própria linha), então ele PODE e DEVE estar aqui também.
+  // Nas linhas vindas do servidor é no-op (já vieram filtradas), mas é o que faz a
+  // reanálise otimista saber que a linha saiu do filtro — ex.: com "Automática" ativo,
+  // reanalisar um grupo cria uma linha com o solicitante da sessão, que deixa de casar,
+  // e handlePeriodicReanalyze usa este predicado para tirá-la da lista e avisar.
   function periodicMatchesFilters(r, f) {
     const idTerm = isValidIdPostTerm(f.idPost) ? f.idPost : "";
+    const solId = solicitanteFilterId(f.solicitante);
     return (
       (!f.status || r.status_compliance === f.status) &&
       (!f.type || r.post_type === f.type) &&
       (!f.domain || r.dominio === f.domain) &&
-      (!idTerm || String(r.id_post ?? "").includes(idTerm))
+      (!idTerm || String(r.id_post ?? "").includes(idTerm)) &&
+      (!solId || String(r.solicitante_id ?? "") === solId)
     );
   }
 
@@ -342,6 +377,45 @@
     if (periodicServerFilter) return;
     periodicDomainOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.dominio))].filter(Boolean).sort();
     periodicTypeOptionsCache = [...new Set(periodicAnalysisAll.map((r) => r.post_type))].filter(Boolean).sort();
+  }
+
+  // Opções do filtro de solicitante, vindas de ?distinct=solicitante. Não entram no
+  // refreshPeriodicFilterOptions() de propósito: aquelas saem do dataset em memória (só as
+  // páginas já carregadas) e são recalculadas a cada render; estas vêm do servidor (todo o
+  // acervo) e só mudam quando os DADOS mudam — nunca por troca de filtro.
+  function renderPeriodicSolicitanteOptions() {
+    const sel = $("#filterPeriodicSolicitante");
+    if (!sel || !periodicSolicitanteOptionsCache) return;
+    const atual = sel.value;
+    sel.innerHTML =
+      '<option value="">Todos Solicitantes</option>' +
+      periodicSolicitanteOptionsCache
+        .map((o) => {
+          const id = solicitanteFilterId(o.solicitante_id);
+          if (!id) return ""; // linha inesperada (id inválido) não vira opção
+          const value = id === "0" ? "auto" : id;
+          const label = id === "0" ? "Automática (n8n)" : (o.solicitante_nome || `Usuário #${id}`);
+          return `<option value="${escapeAttr(value)}">${escapeHtml(label)}</option>`;
+        })
+        .join("");
+    // Preserva a escolha; se a opção sumiu (a última análise do grupo mudou de dono),
+    // volta para "Todos" em vez de deixar o select apontando para algo inexistente.
+    sel.value = Array.from(sel.options).some((o) => o.value === atual) ? atual : "";
+  }
+
+  function loadPeriodicSolicitanteOptions() {
+    return apiGet("periodic_analysis.php?distinct=solicitante")
+      .then((data) => {
+        periodicSolicitanteOptionsCache = Array.isArray(data) ? data : [];
+        renderPeriodicSolicitanteOptions();
+      })
+      .catch(() => {}); // silencioso: sem as opções o select fica só com "Todos"
+  }
+
+  // Busca uma vez por sessão de dados; o reload do servidor força de novo.
+  function ensurePeriodicSolicitanteOptions() {
+    if (periodicSolicitanteOptionsCache) return Promise.resolve();
+    return loadPeriodicSolicitanteOptions();
   }
 
   // Agrupa rows da periodic_analysis em memória (latest por dominio+id_post)
@@ -555,6 +629,7 @@
 
   function ensurePeriodicLoaded() {
     ensurePeriodicCommentCounts();
+    ensurePeriodicSolicitanteOptions();
     if (periodicAnalysisGroups.length) return Promise.resolve();
     if (periodicLoadedPromise) return periodicLoadedPromise;
     periodicLoadedPromise = apiGet(periodicPageUrl(0))
@@ -622,6 +697,10 @@
       Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
       // Comentários podem ter mudado em outra sessão: força releitura das marcas.
       loadPeriodicCommentCounts();
+      // As opções do filtro de solicitante saem dos DADOS (quem pediu a última análise de
+      // cada grupo), então um reload pode ter criado um solicitante novo.
+      periodicSolicitanteOptionsCache = null;
+      loadPeriodicSolicitanteOptions();
     } catch (e) {
       console.error("Falha ao recarregar periódica:", e);
     }
@@ -5170,23 +5249,37 @@
   // Estado vazio contextual: deixa claro QUAIS filtros de backend estão ativos, senão
   // a tabela vazia parece defeito. Só cita o termo quando ele é de fato utilizável —
   // um termo inválido não vira filtro.
+  //
+  // Cada critério é uma locução completa COM a sua preposição ("com ID contendo 48",
+  // "sem comentários", "com o solicitante selecionado"), e a frase é montada juntando-as.
+  // Assim as mensagens de 1 e 2 filtros continuam idênticas às de antes e a de 3 filtros
+  // sai natural ("A, B e C"), sem uma escada de if/else por combinação.
   function periodicEmptyStateHtml() {
     const term = ($("#filterPeriodicIdPost")?.value || "").trim();
     const comments = $("#filterPeriodicComments")?.value || "";
-    const termOk = isValidIdPostTerm(term);
-    const commentsActive = comments === "with" || comments === "without";
-    const commentsLabel = comments === "with" ? "com comentários" : "sem comentários";
+    const solicitante = ($("#filterPeriodicSolicitante")?.value || "").trim();
 
-    let msg;
-    if (termOk && commentsActive) {
-      msg = `Nenhuma análise encontrada com ID contendo <strong>${escapeHtml(term)}</strong> e ${commentsLabel}.`;
-    } else if (termOk) {
-      msg = `Nenhuma análise encontrada com ID contendo <strong>${escapeHtml(term)}</strong>.`;
-    } else if (commentsActive) {
-      msg = `Nenhuma análise encontrada ${commentsLabel}.`;
-    } else {
-      msg = "Nenhuma análise encontrada.";
+    const partes = [];
+    if (isValidIdPostTerm(term)) {
+      partes.push(`com ID contendo <strong>${escapeHtml(term)}</strong>`);
     }
+    if (comments === "with" || comments === "without") {
+      partes.push(comments === "with" ? "com comentários" : "sem comentários");
+    }
+    if (solicitanteFilterId(solicitante)) {
+      partes.push("com o solicitante selecionado");
+    }
+
+    let criterios = "";
+    if (partes.length === 1) {
+      criterios = partes[0];
+    } else if (partes.length > 1) {
+      criterios = partes.slice(0, -1).join(", ") + " e " + partes[partes.length - 1];
+    }
+
+    const msg = criterios
+      ? `Nenhuma análise encontrada ${criterios}.`
+      : "Nenhuma análise encontrada.";
     return `<tr><td colspan="8"><div class="empty-state"><div class="empty-icon">📭</div><p>${msg}</p></div></td></tr>`;
   }
 
@@ -5223,6 +5316,8 @@
     // Os caches são por GRUPO, não do conjunto filtrado: só perdem validade quando o
     // filtro muda. Num refetch forçado pelo mesmo filtro (`keepCaches`) eles seguem
     // corretos — e limpá-los faria o modal aberto perder o que já está na tela.
+    // periodicSolicitanteOptionsCache fica de fora dos dois: ele é dos DADOS (não do
+    // conjunto filtrado), então trocar de filtro não muda a lista de solicitantes.
     if (!opts.keepCaches) {
       Object.keys(periodicHistoryCache).forEach((k) => { delete periodicHistoryCache[k]; });
       Object.keys(periodicCommentsCache).forEach((k) => { delete periodicCommentsCache[k]; });
@@ -5281,6 +5376,11 @@
       const typeLabels = { post: "Post", page: "Página" };
       typeSelect.innerHTML = '<option value="">Todos Tipos</option>' + typeOpts.sort((a, b) => a.localeCompare(b)).map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(typeLabels[t] || t)}</option>`).join("");
       typeSelect.value = currentType;
+
+      // Filtro de solicitante: as opções vêm do servidor e já estão em cache (o
+      // ensurePeriodicLoaded chamou ensurePeriodicSolicitanteOptions). Aqui só repinta,
+      // preservando a escolha atual.
+      renderPeriodicSolicitanteOptions();
 
       applyPeriodicFilters();
       if (!periodicAnalysisVisible.length) {
@@ -5591,6 +5691,15 @@
     const selectPeriodicComments = $("#filterPeriodicComments");
     if (selectPeriodicComments) {
       selectPeriodicComments.addEventListener("change", () => {
+        clearTimeout(periodicIdSearchTimeout);
+        applyPeriodicServerFilters();
+      });
+    }
+
+    // Filtro de solicitante — backend também (age sobre a última análise de cada grupo).
+    const selectPeriodicSolicitante = $("#filterPeriodicSolicitante");
+    if (selectPeriodicSolicitante) {
+      selectPeriodicSolicitante.addEventListener("change", () => {
         clearTimeout(periodicIdSearchTimeout);
         applyPeriodicServerFilters();
       });

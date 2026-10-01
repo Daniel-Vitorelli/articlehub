@@ -39,10 +39,29 @@ if ($method === 'GET') {
             $stmt = $db->query('SELECT DISTINCT post_type FROM periodic_analysis WHERE post_type IS NOT NULL AND post_type != "" ORDER BY post_type');
             jsonResponse(200, $stmt->fetchAll(PDO::FETCH_COLUMN));
         }
+        if ($distinct === 'solicitante') {
+            // Diferente dos dois acima: o filtro de solicitante age sobre a ÚLTIMA análise de
+            // cada grupo, então as opções precisam sair do mesmo conjunto. Oferecer alguém que
+            // só pediu uma análise já superada daria sempre resultado vazio.
+            // 0 (análise automática do n8n) entra como um solicitante a mais; NULL fica de fora
+            // de propósito — não existe opção "sem solicitante".
+            $stmt = $db->query(
+                'SELECT DISTINCT pa.solicitante_id, sol.name AS solicitante_nome
+                 FROM periodic_analysis pa
+                 INNER JOIN (SELECT MAX(id) AS max_id, dominio, id_post
+                             FROM periodic_analysis GROUP BY dominio, id_post) AS latest
+                     ON pa.dominio = latest.dominio AND pa.id_post <=> latest.id_post AND pa.id = latest.max_id
+                 LEFT JOIN users sol ON sol.id = pa.solicitante_id
+                 WHERE pa.solicitante_id IS NOT NULL
+                 ORDER BY (pa.solicitante_id = 0) DESC, sol.name ASC'
+            );
+            jsonResponse(200, $stmt->fetchAll(PDO::FETCH_ASSOC));
+        }
     }
 
-    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx&id_post=123&comments=with
+    // Lazy pagination: ?limit=50&offset=0&status=aprovado&post_type=post&dominio=xxx&id_post=123&comments=with&solicitante=auto
     // comments aceita 'with' (só grupos com comentário) ou 'without' (só sem).
+    // solicitante aceita 'auto' (análise automática do n8n) ou o id de um usuário.
     $limit = isset($_GET['limit']) ? (int)$_GET['limit'] : 0;
     $offset = isset($_GET['offset']) ? (int)$_GET['offset'] : 0;
     $status = trim($_GET['status'] ?? '');
@@ -79,6 +98,19 @@ if ($method === 'GET') {
             $exists = 'EXISTS (SELECT 1 FROM periodic_analysis_comments pc
                                WHERE pc.dominio = pa.dominio AND pc.id_post <=> pa.id_post)';
             $where[] = $comments === 'with' ? $exists : 'NOT ' . $exists;
+        }
+        // Filtro por quem pediu a ÚLTIMA análise do grupo. O INNER JOIN com o "latest" (acima)
+        // já restringe `pa` à linha mais recente de cada grupo, então filtrar por
+        // pa.solicitante_id é exatamente "grupos cuja última análise foi pedida por X".
+        // 'auto' é a análise automática do n8n (solicitante_id = 0); qualquer outro valor é um
+        // id de usuário. Allowlist + ctype_digit: nada do usuário entra no SQL.
+        // (solicitante=0 funciona igual a 'auto' — o cast de ctype_digit dá 0.)
+        $solicitante = trim($_GET['solicitante'] ?? '');
+        if ($solicitante === 'auto') {
+            $where[] = 'pa.solicitante_id = 0';
+        } elseif ($solicitante !== '' && ctype_digit($solicitante)) {
+            $where[] = 'pa.solicitante_id = ?';
+            $params[] = (int)$solicitante;
         }
         $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';
 

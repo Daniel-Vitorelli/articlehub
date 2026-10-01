@@ -557,6 +557,11 @@
                   <option value="with">Com comentários</option>
                   <option value="without">Sem comentários</option>
                 </select>
+                <!-- As opções são montadas a partir de ?distinct=solicitante (quem pediu a
+                     ÚLTIMA análise de cada grupo). "Automática (n8n)" = solicitante_id 0. -->
+                <select class="filter-select" id="filterPeriodicSolicitante" aria-label="Filtrar por quem solicitou a última análise" title="Mostra os grupos cuja ÚLTIMA análise foi solicitada por quem você escolher.">
+                  <option value="">Todos Solicitantes</option>
+                </select>
               </div>
             </div>
             <table class="data-table">
