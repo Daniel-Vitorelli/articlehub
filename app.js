@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.5";
+  const APP_VERSION = "1.7.6";
   // ---- Presença (registro de presença) ----
   // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
   // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
@@ -129,16 +129,56 @@
   // ============================================
   //  TIMEZONE UTILS (America/Sao_Paulo)
   // ============================================
+  // O relógio do NAVEGADOR não é fonte de verdade de nada neste app. Todo timestamp de
+  // evento vem do MySQL (relógio do servidor) e é formatado em São Paulo no display. Por
+  // isso o front NUNCA inventa um created_at: uma linha otimista entra com a marca
+  // PENDING_DATE e é reconciliada com o valor do servidor no reload seguinte.
+  //
+  // Motivo: `new Date().toISOString()` gera UTC e `now.getHours()` gera hora local, e os
+  // dois eram depois lidos por formatDateTime() COMO SE fossem São Paulo. O erro não se
+  // cancelava — somava. Além disso, em periodic_analysis o created_at otimista decide a
+  // ORDEM da linha no grupo, então um relógio errado posicionava a linha no lugar errado.
+  const PENDING_DATE = "pending";
+
+  // Comparador de data que trata PENDING_DATE como "agora" (maior data), sem precisar de
+  // um relógio. Sem isso, uma string comum perderia para qualquer data real no sort.
+  function compareDateDesc(a, b) {
+    const va = a === PENDING_DATE ? Infinity : new Date(a).getTime();
+    const vb = b === PENDING_DATE ? Infinity : new Date(b).getTime();
+    if (va === vb) return 0;
+    if (Number.isNaN(va)) return 1;
+    if (Number.isNaN(vb)) return -1;
+    return vb - va;
+  }
+
   function formatDate(dateStr) {
-    if (!dateStr) return "—";
+    if (!dateStr || dateStr === PENDING_DATE) return "—";
     // Se vier 'YYYY-MM-DD', forçamos a leitura adicionando tempo nulo UTC,
     // garantindo que não sofra shift se o script rodar em fuso diferente
     const [y, m, d] = dateStr.split("-");
     return `${d}/${m}/${y}`;
   }
 
+  // Data/hora de agora, JÁ no fuso de São Paulo e no mesmo formato do relógio do banco
+  // ('YYYY-MM-DD HH:MM:SS'). Use SOMENTE onde um valor de exibição é indispensável antes da
+  // resposta do servidor — o padrão continua sendo PENDING_DATE. Diferente de toISOString()
+  // (UTC) e de getHours() (fuso da máquina), este valor é o que formatDateTime() espera ler.
+  function nowSaoPaulo() {
+    // sv-SE formata como 'YYYY-MM-DD HH:MM:SS' — o mesmo layout do CURRENT_TIMESTAMP.
+    return new Intl.DateTimeFormat("sv-SE", {
+      timeZone: "America/Sao_Paulo",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date());
+  }
+
   function formatDateTime(isoStr) {
-    if (!isoStr) return "—";
+    if (!isoStr || isoStr === PENDING_DATE) return "—";
     const d = new Date(isoStr);
     try {
       return new Intl.DateTimeFormat("pt-BR", {
@@ -521,7 +561,7 @@
     });
     periodicAnalysisGroups = [];
     groupsMap.forEach((g) => {
-        g.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        g.sorted.sort(compareDateDesc);
         periodicAnalysisGroups.push(g);
     });
     periodicAnalysisAll = periodicAnalysisGroups.map((g) => g.sorted[0]).filter(Boolean);
@@ -552,7 +592,7 @@
                 if (!byKey) return;
                 Object.entries(byKey).forEach(([key, histRows]) => {
                   if (!histRows?.length) { periodicHistoryCache[key] = []; return; }
-                  histRows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+                  histRows.sort(compareDateDesc);
                   periodicHistoryCache[key] = histRows.slice(1).map(h => ({
                     created_at: h.created_at,
                     status_compliance: h.status_compliance,
@@ -577,7 +617,7 @@
     apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
       .then((rows) => {
         if (!rows?.length) { periodicHistoryCache[key] = []; return; }
-        rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        rows.sort(compareDateDesc);
         periodicHistoryCache[key] = rows.slice(1).map((h) => ({
           created_at: h.created_at,
           status_compliance: h.status_compliance,
@@ -641,7 +681,7 @@
         batch.forEach(item => {
           const rows = byKey[item.key] || [];
           if (!rows.length) { periodicHistoryCache[item.key] = []; return; }
-          rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+          rows.sort(compareDateDesc);
           // Slice(1) remove o primeiro que é o latest (já no resumo)
           periodicHistoryCache[item.key] = rows.slice(1).map((h) => ({
             created_at: h.created_at,
@@ -706,7 +746,7 @@
       const existing = periodicAnalysisGroups.find((g) => g.key === key);
       if (existing) {
         existing.sorted.unshift(r);
-        existing.sorted.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+        existing.sorted.sort(compareDateDesc);
       } else {
         periodicAnalysisGroups.push({ key, sorted: [r] });
       }
@@ -1186,19 +1226,30 @@
   // fora de São Paulo a hora exibida desloca horas (e no Safari pode dar Invalid Date).
   // Aqui o wall-clock do servidor vira instante absoluto; a formatação em pt-BR continua
   // no formatDateTime() de sempre.
+  //
+  // O offset é OBRIGATÓRIO (serverUtcOffsetMinutes !== null). Enquanto for desconhecido,
+  // devolvemos null em vez de assumir 0: assumir 0 é afirmar "o servidor está em UTC", e
+  // isso produz uma hora errada SILENCIOSA. Devolver null faz o chamador exibir "—".
+  // Antes, `serverUtcOffsetMinutes || 0` escondia o caso null atrás de um 0 legítimo.
   function parseServerDateTime(str) {
+    if (serverUtcOffsetMinutes === null) return null;
     const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
       String(str ?? "").trim(),
     );
     if (!m) return null;
     const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
     // offset -180 (UTC-3): 12:00 local = 15:00 UTC -> soma 3h. Daí subtrair o offset.
-    return new Date(ms - (serverUtcOffsetMinutes || 0) * 60000);
+    return new Date(ms - serverUtcOffsetMinutes * 60000);
   }
 
   function formatPresenceDateTime(str) {
+    if (!str || str === PENDING_DATE) return "—";
     const d = parseServerDateTime(str);
-    return d ? formatDateTime(d.toISOString()) : formatDateTime(str);
+    // Offset desconhecido: `parseServerDateTime` devolve null e não dá para afirmar a hora
+    // sem arriscar erro de horas. Mostra o wall clock do servidor como veio, sem inventar
+    // conversão. O offset é preenchido no primeiro contato com a API (heartbeat OU leitura).
+    if (!d) return String(str);
+    return formatDateTime(d.toISOString());
   }
 
   function schedulePresence(ms) {
@@ -1211,6 +1262,28 @@
     if (!currentUser) return;
     presenceTimerMs = period;
     presenceTimer = setInterval(presenceBeat, period);
+  }
+
+  // Garante que serverUtcOffsetMinutes esteja preenchido ANTES de formatar presença.
+  //
+  // Por que existe: o offset só era capturado dentro de presenceBeat(), que não roda para
+  // quem está com track_presence = 0 (startPresence aborta). Nesse caso ele ficava null e
+  // parseServerDateTime tratava o relógio do banco como UTC — "Online desde" deslocado.
+  // Como os endpoints de leitura (presence-log, users?online) JÁ devolvem o campo, basta
+  // pedi-lo aqui, sem depender do heartbeat.
+  let presenceOffsetLoading = null;
+  function ensureServerUtcOffset() {
+    if (serverUtcOffsetMinutes !== null) return Promise.resolve();
+    if (presenceOffsetLoading) return presenceOffsetLoading;
+    presenceOffsetLoading = apiGet("presence.php?online=1")
+      .then((res) => {
+        if (res && typeof res.server_utc_offset_minutes === "number") {
+          serverUtcOffsetMinutes = res.server_utc_offset_minutes; // 0 é válido (UTC)
+        }
+      })
+      .catch(() => { /* offline: as células caem no fallback sem conversão */ })
+      .finally(() => { presenceOffsetLoading = null; });
+    return presenceOffsetLoading;
   }
 
   // Não usa apiPost de propósito: precisa enxergar o STATUS HTTP (não existe handler
@@ -1656,7 +1729,7 @@
     $("#navBadgePending").textContent = pending;
 
     const sorted = [...visible]
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .sort(compareDateDesc)
       .slice(0, 5);
     const tbody = $("#dashTableBody");
 
@@ -3154,9 +3227,6 @@
 
     closeModal("modalCompliance");
 
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, "0");
-    const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
     const tempId = -Date.now() * 1000 - (++periodicTempIdSeq);
     const newRow = {
       id: tempId,
@@ -3171,7 +3241,11 @@
       // hora, sem esperar o próximo reload trazer o `solicitante_nome` do JOIN.
       solicitante_id: currentUser?.id,
       solicitante_nome: currentUser?.name || "",
-      created_at: createdAt,
+      // O servidor OMITE created_at de propósito (DEFAULT CURRENT_TIMESTAMP, para todos os
+      // registros saírem do mesmo relógio). Inventar aqui com o relógio do navegador
+      // (getHours() = hora local) e depois formatar como São Paulo somava o erro em vez
+      // de cancelá-lo. PENDING_DATE ordena como "agora" e exibe "—" até o reload.
+      created_at: PENDING_DATE,
     };
 
     const matchesFilter = periodicMatchesFilters(newRow, periodicFilters());
@@ -3343,9 +3417,8 @@
     const selAll = $("#periodicSelectAll");
     if (selAll) { selAll.checked = false; selAll.indeterminate = false; }
 
-    const now = new Date();
-    const pad = (n) => String(n).padStart(2, "0");
-    const createdAt = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+    // created_at das linhas otimistas do lote: PENDING_DATE (ver reanalyzeSingle) — o
+    // servidor é quem define o valor real, com o relógio do MySQL.
     const bulkFilters = periodicFilters();
 
     // Mapa O(1) dos grupos (o array de grupos não é reordenado, só os sorted internos).
@@ -3388,7 +3461,8 @@
         // Quem pediu: o próprio usuário logado (ver comentário em handlePeriodicReanalyze).
         solicitante_id: currentUser?.id,
         solicitante_nome: currentUser?.name || "",
-        created_at: createdAt,
+        // PENDING_DATE: o relógio é do servidor (ver reanalyzeSingle).
+        created_at: PENDING_DATE,
       };
       items.push({
         id_post: latest.id_post,
@@ -3895,7 +3969,7 @@
         apiGet(`periodic_analysis.php?history=1&dominio=${encodeURIComponent(dominio)}&id_post=${encodeURIComponent(idPost)}`)
           .then(rows => {
             if (!rows?.length) return;
-            rows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            rows.sort(compareDateDesc);
             periodicHistoryCache[key] = rows.slice(1).map(h => ({
               created_at: h.created_at,
               status_compliance: h.status_compliance,
@@ -4133,6 +4207,13 @@
 
   function renderUsers() {
     const tbody = $("#usersTableBody");
+    // "Online desde" é formatado a partir do relógio do BANCO e precisa do offset. Quem
+    // abre esta tela sem heartbeat (usuário com track_presence = 0) tinha o offset null e
+    // via a hora deslocada. O recarregamento NÃO pode chamar renderUsers de novo (laço
+    // infinito) — repinta só as células de presença.
+    ensureServerUtcOffset().then(() => {
+      if (Object.keys(presenceOnlineMap).length > 0) updatePresenceCells();
+    });
     tbody.innerHTML = users
       .map((u) => {
         const isSelf = u.id == currentUser.id;
@@ -4319,9 +4400,15 @@
     $("#formNewRequest").reset();
     const deadlineInput =
       $("#formNewRequest").querySelector('[name="deadline"]');
-    const d = new Date();
-    d.setDate(d.getDate() + 7);
-    deadlineInput.value = d.toISOString().split("T")[0];
+    // Prazo padrão: hoje (São Paulo) + 7 dias.
+    // Antes: `d.setDate(d.getDate()+7)` sobre a data LOCAL e depois `toISOString()` (UTC) —
+    // dupla conversão, e a data sugerida podia cair 1 dia fora perto da meia-noite. Agora
+    // parte de `today()` (já em São Paulo) e soma os dias com Date.UTC, sem passar por local.
+    if (deadlineInput) {
+      const [ty, tm, td] = today().split("-").map(Number);
+      const plus7 = new Date(Date.UTC(ty, tm - 1, td + 7));
+      deadlineInput.value = plus7.toISOString().split("T")[0];
+    }
 
     // Hide writer select for redators (auto-assigned by backend)
     const writerGroup = $("#selectWriter")?.closest(".form-group");
@@ -4358,8 +4445,12 @@
       content_type: fd.get("content_type"),
       instructions: fd.get("instructions") || "",
       status: "pending",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      // O servidor OMITE created_at/updated_at (DEFAULT CURRENT_TIMESTAMP / ON UPDATE, para
+      // tudo sair do relógio do MySQL). `toISOString()` aqui gerava UTC, que formatDateTime()
+      // depois lia COMO São Paulo — o deslocamento de 3h aparecia na coluna de data. A
+      // resposta do POST traz a linha re-lida e substitui isto logo abaixo.
+      created_at: PENDING_DATE,
+      updated_at: PENDING_DATE,
     };
 
     closeModal("modalNew");
@@ -4381,7 +4472,11 @@
     }).then((res) => {
       if (res && res.id) {
         const idx = requests.findIndex((r) => r.id === tempId);
-        if (idx !== -1) requests[idx] = { ...requests[idx], id: res.id };
+        // Escrita então render (nunca update otimista): se o servidor devolveu a linha
+        // re-lida, ela SUBSTITUI a otimista inteira — assim created_at/updated_at passam a
+        // ser os do MySQL, e não PENDING_DATE. Sem a linha (resposta de um deploy antigo),
+        // mantém o fallback só trocando o id.
+        if (idx !== -1) requests[idx] = res.row ? res.row : { ...requests[idx], id: res.id };
         renderRequests();
       }
     }).catch((err) => {
@@ -4476,7 +4571,9 @@
         purpose: fd.get("purpose"),
         content_type: fd.get("content_type"),
         instructions: fd.get("instructions") || "",
-        updated_at: new Date().toISOString(),
+        // updated_at é do MySQL (ON UPDATE CURRENT_TIMESTAMP): o front não inventa. O
+        // toISOString() antigo gerava UTC lido como São Paulo (+3h de erro).
+        updated_at: PENDING_DATE,
       });
     }
 
@@ -5602,7 +5699,7 @@
       return;
     }
     const sorted = [...notifications].sort(
-      (a, b) => new Date(b.created_at) - new Date(a.created_at),
+      compareDateDesc,
     );
     list.innerHTML = sorted
       .slice(0, 20)
@@ -6000,6 +6097,11 @@
       if (res && typeof res.server_utc_offset_minutes === "number") {
         serverUtcOffsetMinutes = res.server_utc_offset_minutes; // 0 é válido (UTC)
       }
+      // Resposta sem o offset (deploy antigo do back, ou envelope inesperado): busca em
+      // separado. Sem isto, o parse cai no fallback e a coluna mostra o wall clock cru.
+      else {
+        await ensureServerUtcOffset();
+      }
       if (typeof res?.total === "number") presenceLogTotal = res.total;
 
       if (!data.length && reset) {
@@ -6165,7 +6267,7 @@
             if (!byKey) return;
             Object.entries(byKey).forEach(([key, histRows]) => {
               if (!histRows?.length) { periodicHistoryCache[key] = []; return; }
-              histRows.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+              histRows.sort(compareDateDesc);
               periodicHistoryCache[key] = histRows.slice(1).map(h => ({
                 created_at: h.created_at,
                 status_compliance: h.status_compliance,
@@ -6546,14 +6648,17 @@
   //  HEADER DATE
   // ============================================
   function setHeaderDate() {
-    const now = new Date();
+    // timeZone obrigatório: sem ele, toLocaleDateString usa o fuso da MÁQUINA e o cabeçalho
+    // fica um dia fora para quem acessa de outro fuso. Era a única data do app fora de São
+    // Paulo — inconsistente com formatDateTime() e today().
     const options = {
       weekday: "long",
       day: "numeric",
       month: "long",
       year: "numeric",
+      timeZone: "America/Sao_Paulo",
     };
-    $("#headerDate").textContent = now.toLocaleDateString("pt-BR", options);
+    $("#headerDate").textContent = new Date().toLocaleDateString("pt-BR", options);
   }
 
   // ============================================

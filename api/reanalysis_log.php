@@ -34,14 +34,13 @@ function listReanalysisLog(): void
     $where = [];
     $params = [];
 
-    // Filtro de data: dia exato, como em api/logs.php. Sem data = todos os períodos
-    // (o front não pré-preenche, porque pedidos de reanálise são esporádicos e um
-    // "hoje" fixo mostraria vazio na maioria dos dias).
-    $date = trim($_GET['date'] ?? '');
-    if ($date !== '') {
-        $where[] = 'DATE(prl.created_at) = ?';
-        $params[] = $date;
-    }
+    // Filtro de data: dia exato no fuso de São Paulo — o mesmo dia que o front exibe. Sem
+    // data = todos os períodos (o front não pré-preenche, porque pedidos de reanálise são
+    // esporádicos e um "hoje" fixo mostraria vazio na maioria dos dias).
+    // Antes: `DATE(prl.created_at) = ?`, que comparava o dia escolhido em SP com o dia do
+    // SERVIDOR em que a linha foi gravada (mesmo bug de api/logs.php) e matava o índice.
+    $date = dateParam('date');
+    applySaoPauloDayFilter($where, $params, 'prl.created_at', $date);
 
     $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
     if ($userId) {

@@ -19,7 +19,12 @@ function listLogs(): void
 
     // Filters
     $filterUserId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
-    $filterDate = $_GET['date'] ?? date('Y-m-d'); // Default: today
+
+    // O dia é o dia do USUÁRIO (São Paulo), não o do servidor — e o padrão "hoje" é
+    // derivado do relógio do MySQL, para que o dia exibido e o dia filtrado venham do
+    // mesmo relógio. Antes: `date('Y-m-d')` (relógio do container), um terceiro relógio
+    // na mesma consulta.
+    $filterDate = dateParam('date') ?? saoPauloToday($db);
 
     // Security check: only admin can see other users' logs
     if ($user['role'] !== 'admin') {
@@ -27,8 +32,13 @@ function listLogs(): void
     }
 
     $params = [];
-    $where = ["DATE(rh.created_at) = ?"];
-    $params[] = $filterDate;
+    $where = [];
+
+    // Intervalo half-open no fuso de São Paulo (ver applySaoPauloDayFilter em config.php).
+    // Substitui `DATE(rh.created_at) = ?`: aquele comparava o dia de SP com o dia do
+    // servidor em que a linha foi gravada (desaparecia o log perto da virada do dia no
+    // servidor) e ainda desativava o índice.
+    applySaoPauloDayFilter($where, $params, 'rh.created_at', $filterDate);
 
     if ($filterUserId) {
         $where[] = "rh.user_id = ?";

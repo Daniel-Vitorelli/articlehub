@@ -384,7 +384,15 @@ function createRequest(): void
         $stmt->execute([$writerId, $msg, $newId]);
     }
 
-    jsonResponse(201, ['id' => $newId, 'message' => 'Solicitação criada.']);
+    // Devolve a linha RE-LIDA junto do id: o front não pode gerar created_at/updated_at
+    // (o relógio dele não é o do MySQL, e formatDateTime() lê como São Paulo — ver
+    // PENDING_DATE em app.js). Sem isto a linha otimista ficaria com data inventada até
+    // o próximo reload. SELECT explícito, como em updateRequest — nunca SELECT *.
+    $stmt = $db->prepare('SELECT ' . getRequestInternalFields() . ' FROM requests WHERE id = ?');
+    $stmt->execute([$newId]);
+    $row = $stmt->fetch();
+
+    jsonResponse(201, ['id' => $newId, 'row' => $row, 'message' => 'Solicitação criada.']);
 }
 
 // --- Update ---
