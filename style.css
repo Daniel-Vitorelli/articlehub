@@ -1183,6 +1183,39 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   color: var(--accent-danger);
 }
 
+/* ---- Presença (registro de presença) ----
+   Bolinha de online/offline na tela de Usuários. Reusa as cores dos badges (verde =
+   "ativo", cinza = apagado) em vez de inventar uma paleta nova. */
+.presence-label {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.presence-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* O halo deixa o "online" legível mesmo ao lado da coluna Ativo/Inativo, que também
+   é verde — sem ele os dois se confundem. */
+.presence-dot.online {
+  background: var(--accent-secondary);
+  box-shadow: 0 0 0 3px rgba(44, 182, 125, 0.18);
+}
+
+.presence-since {
+  display: block;
+  padding-left: 14px; /* alinha com o texto, não com a bolinha */
+  margin-top: 2px;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
 /* Priority */
 .priority-indicator {
   display: inline-flex;

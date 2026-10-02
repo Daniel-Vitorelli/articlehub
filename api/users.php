@@ -210,7 +210,15 @@ function deleteUser(): void
         $db->prepare('DELETE FROM messages WHERE from_id = ? OR to_id = ?')->execute([$id, $id]);
         // 6. Delete preferences
         $db->prepare('DELETE FROM user_preferences WHERE user_id = ?')->execute([$id]);
-        // 7. Delete user
+        // 7. Delete presence (heartbeat). Gate de existência: as tabelas nascem no
+        //    primeiro heartbeat (ensurePresenceTables em api/presence.php), então num
+        //    banco sem presença elas podem não existir — e derrubar a exclusão de um
+        //    usuário por causa de tabela de auditoria seria desproporcional.
+        if ($db->query("SHOW TABLES LIKE 'presence_sessions'")->fetch()) {
+            $db->prepare('DELETE FROM presence_tabs WHERE user_id = ?')->execute([$id]);
+            $db->prepare('DELETE FROM presence_sessions WHERE user_id = ?')->execute([$id]);
+        }
+        // 8. Delete user
         $db->prepare('DELETE FROM users WHERE id = ?')->execute([$id]);
 
         $db->commit();

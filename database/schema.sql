@@ -369,6 +369,54 @@ CREATE TABLE IF NOT EXISTS `periodic_reanalysis_log` (
 
 
 -- ============================================
+-- PRESENÇA (registro de presença / online-offline)
+--
+-- NÃO usa sessão de servidor: quem decide que o usuário está online é o navegador,
+-- que manda um heartbeat enquanto a aba está aberta.
+--
+-- presence_sessions = 1 linha por usuário (entrou / saiu / duração) — é o registro
+--   que o requisito pede. `exited_at IS NULL` é o ÚNICO critério de "em aberto".
+-- presence_tabs     = 1 linha por aba viva. É o que faz "fechar 1 de N abas" não
+--   marcar offline: a sessão só fecha quando NOT EXISTS aba viva.
+--
+-- Decisão explícita: aba em segundo plano ou minimizada CONTA COMO ONLINE. O heartbeat
+-- não pausa com document.hidden; só fecha a aba ou estoura o timeout.
+--
+-- DESVIO DO PADRÃO DA CASA: DATETIME em vez de TIMESTAMP. (a) TIMESTAMP para em 2038;
+-- (b) TIMESTAMP converte na escrita/leitura por @@time_zone, e este projeto já sofreu
+-- skew de ~3h por relógio. DATETIME + NOW() do MySQL mantém tudo num relógio só.
+-- entered_at/last_seen_at usam DEFAULT CURRENT_TIMESTAMP: nunca gerar no PHP.
+-- ============================================
+CREATE TABLE IF NOT EXISTS `presence_sessions` (
+  `id`           INT UNSIGNED    NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `user_id`      INT UNSIGNED    NOT NULL COMMENT 'Dono da presenca (users.id), sempre da sessao',
+  `entered_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Ficou online (1a aba)',
+  `exited_at`    DATETIME        DEFAULT NULL COMMENT 'NULL = ainda online',
+  `last_seen_at` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Ultimo heartbeat de QUALQUER aba viva',
+  `exit_reason`  VARCHAR(20)     DEFAULT NULL COMMENT 'closed | timeout | logout',
+
+  INDEX idx_ps_user_entered (user_id, entered_at),
+  INDEX idx_ps_open         (exited_at, last_seen_at),
+  INDEX idx_ps_entered      (entered_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Duração NÃO é coluna: gerada não pode chamar NOW() (não determinística) e calculada
+-- estaria sempre errada na linha aberta. Computa na leitura com
+-- TIMESTAMPDIFF(SECOND, entered_at, COALESCE(exited_at, NOW())).
+CREATE TABLE IF NOT EXISTS `presence_tabs` (
+  `tab_token`    VARCHAR(64)     NOT NULL PRIMARY KEY COMMENT 'Token por aba (sessionStorage); 1 linha = 1 aba viva',
+  `session_id`   INT UNSIGNED    NOT NULL COMMENT 'presence_sessions.id',
+  `user_id`      INT UNSIGNED    NOT NULL COMMENT 'Desnormalizado: permite DELETE no cleanup de usuario sem JOIN',
+  `last_seen_at` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `created_at`   DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  INDEX idx_pt_session (session_id),
+  INDEX idx_pt_user    (user_id),
+  INDEX idx_pt_seen    (last_seen_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================
 -- DADOS INICIAIS: Usuários
 -- Senhas em texto plano (dev) - trocar por password_hash em prod
 -- ============================================
@@ -536,6 +584,35 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 --   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 -- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('bulk_confirm_threshold', '10');
+
+-- presence_sessions + presence_tabs (criadas automaticamente pela api/presence.php no
+-- primeiro heartbeat; scripts manuais equivalentes às definições no topo deste arquivo)
+-- CREATE TABLE IF NOT EXISTS presence_sessions (
+--   id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+--   user_id INT UNSIGNED NOT NULL,
+--   entered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   exited_at DATETIME DEFAULT NULL,
+--   last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   exit_reason VARCHAR(20) DEFAULT NULL,
+--   INDEX idx_ps_user_entered (user_id, entered_at),
+--   INDEX idx_ps_open (exited_at, last_seen_at),
+--   INDEX idx_ps_entered (entered_at)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- CREATE TABLE IF NOT EXISTS presence_tabs (
+--   tab_token VARCHAR(64) NOT NULL PRIMARY KEY,
+--   session_id INT UNSIGNED NOT NULL,
+--   user_id INT UNSIGNED NOT NULL,
+--   last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+--   INDEX idx_pt_session (session_id),
+--   INDEX idx_pt_user (user_id),
+--   INDEX idx_pt_seen (last_seen_at)
+-- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+--
+-- Configurações de presença (a api/settings.php semeia sozinha com INSERT IGNORE;
+-- os defaults batem com as constantes em api/presence.php):
+-- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('presence_heartbeat_interval', '60');
+-- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('presence_offline_timeout', '150');
 
 -- Índices para performance (lazy load) - execute se ainda não existirem
 -- CREATE INDEX idx_periodic_dominio ON periodic_analysis (dominio);

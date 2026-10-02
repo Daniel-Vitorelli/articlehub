@@ -59,7 +59,25 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.4";
+  const APP_VERSION = "1.7.5";
+  // ---- Presença (registro de presença) ----
+  // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
+  // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
+  // Os defaults/limites batem com api/presence.php e api/settings.php — os três lugares
+  // precisam concordar.
+  const PRESENCE_INTERVAL_DEFAULT = 60; // segundos entre batidas
+  const PRESENCE_INTERVAL_MIN = 15;
+  const PRESENCE_INTERVAL_MAX = 300;
+  const PRESENCE_TIMEOUT_DEFAULT = 150; // segundos sem bater até virar offline
+  const PRESENCE_TIMEOUT_MIN = 60;
+  const PRESENCE_TIMEOUT_MAX = 900;
+  const PRESENCE_BACKOFF_MAX_MS = 600000; // teto do backoff: 10 min
+  let presenceTimer = null;
+  let presenceTimerMs = 0; // período atualmente agendado (pode estar em backoff)
+  let presenceIntervalMs = PRESENCE_INTERVAL_DEFAULT * 1000;
+  let presenceTabToken = null;
+  let presenceFailures = 0; // falhas consecutivas -> backoff
+  let presenceOnlineMap = {}; // user_id -> linha aberta. Só admin pede/preenche.
   // Contador monotônico para ids temporários do update otimista (evita colisão
   // de -Date.now() em cliques/lotes no mesmo ms, que reconciliava a linha errada).
   let periodicTempIdSeq = 0;
@@ -900,6 +918,10 @@
     preloadPeriodicInBackground();
     startPolling();
     connectRealtime();
+    // Presença por último: é o único ponto que cobre os DOIS caminhos de entrada
+    // (login fresco em handleLogin e restauração de sessão em initLogin), e precisa
+    // rodar depois do loadAll() porque o intervalo vem de appSettings.
+    startPresence();
   }
 
   async function handleLogin(e) {
@@ -961,6 +983,196 @@
     if (pollInterval) {
       clearInterval(pollInterval);
       pollInterval = null;
+    }
+  }
+
+  // ============================================
+  //  PRESENÇA (registro de presença) — heartbeat
+  // ============================================
+  // Presença não usa a sessão do servidor: o usuário está online enquanto a aba estiver
+  // aberta, e passa a offline quando ela fecha OU quando o heartbeat para de chegar.
+  //
+  // DECISÃO EXPLÍCITA: ABA OCULTA/MINIMIZADA CONTA COMO ONLINE. Nada aqui checa
+  // document.hidden (o polling acima pausa; o heartbeat NÃO). Só fecha a aba ou estoura
+  // o timeout — e por isso o servidor usa max(timeout, intervalo + 30) como limbo:
+  // Chrome acelera o timer de aba oculta para ~1/min.
+  //
+  // O token identifica a ABA, não o usuário: vai no sessionStorage, então sobrevive a F5
+  // e morre com a aba. É o que faz "só fica offline quando nenhuma aba restar" funcionar.
+
+  // crypto.randomUUID() só existe em contexto seguro (https/localhost). Este app é
+  // servido por IP em http, então o fallback é obrigatório — sem ele o token viraria
+  // undefined e TODAS as abas compartilhariam uma linha só.
+  function makeTabToken() {
+    const c = typeof crypto !== "undefined" ? crypto : null;
+    if (c && typeof c.randomUUID === "function") return c.randomUUID();
+    if (c && typeof c.getRandomValues === "function") {
+      const buf = new Uint8Array(16);
+      c.getRandomValues(buf);
+      return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+    }
+    return "t" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+  }
+
+  function presenceToken() {
+    if (presenceTabToken) return presenceTabToken;
+    let token = null;
+    try {
+      token = sessionStorage.getItem("ah_tab_token");
+    } catch (e) {
+      /* sessionStorage bloqueado: cai no token só em memória */
+    }
+    if (!token) {
+      token = makeTabToken();
+      try {
+        sessionStorage.setItem("ah_tab_token", token);
+      } catch (e) {
+        /* segue sem persistir: um F5 abriria outra sessão, nada pior que isso */
+      }
+    }
+    presenceTabToken = token;
+    return token;
+  }
+
+  // Ponto único de leitura das duas configurações. Checa `null`/`undefined`/`""` em vez
+  // de usar `raw || default`: `0` também é falsy, e aqui ele só é inválido, não ausente
+  // (convenção: Number("") e Number(null) são 0 — nunca tratar "zero" como sentinela).
+  function clampPresenceSetting(raw, fallback, min, max) {
+    if (raw === null || raw === undefined || raw === "") return fallback;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(Math.max(n, min), max);
+  }
+
+  function presenceIntervalSec() {
+    return clampPresenceSetting(
+      appSettings ? appSettings.presence_heartbeat_interval : null,
+      PRESENCE_INTERVAL_DEFAULT,
+      PRESENCE_INTERVAL_MIN,
+      PRESENCE_INTERVAL_MAX,
+    );
+  }
+
+  function presenceTimeoutSec() {
+    return clampPresenceSetting(
+      appSettings ? appSettings.presence_offline_timeout : null,
+      PRESENCE_TIMEOUT_DEFAULT,
+      PRESENCE_TIMEOUT_MIN,
+      PRESENCE_TIMEOUT_MAX,
+    );
+  }
+
+  function schedulePresence(ms) {
+    const period = ms || presenceIntervalMs;
+    if (presenceTimer && presenceTimerMs === period) return;
+    if (presenceTimer) {
+      clearInterval(presenceTimer);
+      presenceTimer = null;
+    }
+    if (!currentUser) return;
+    presenceTimerMs = period;
+    presenceTimer = setInterval(presenceBeat, period);
+  }
+
+  // Não usa apiPost de propósito: precisa enxergar o STATUS HTTP (não existe handler
+  // global de 401 neste app) e aceitar o intervalo que o servidor mandar.
+  async function presenceBeat() {
+    if (!currentUser) return;
+    try {
+      const res = await fetch(`${API}/presence.php?action=heartbeat`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tab: presenceToken() }),
+      });
+      // Sessão expirada: para o timer em silêncio. Não há handler global de 401 e não
+      // convém forçar logout daqui; a varredura do servidor fecha a sessão sozinha.
+      if (res.status === 401) {
+        stopPresence(false);
+        return;
+      }
+      if (!res.ok) throw new Error(`Erro ${res.status}`);
+      const data = await res.json().catch(() => null);
+      presenceFailures = 0;
+      presenceIntervalMs =
+        clampPresenceSetting(
+          data ? data.interval : null,
+          presenceIntervalSec(),
+          PRESENCE_INTERVAL_MIN,
+          PRESENCE_INTERVAL_MAX,
+        ) * 1000;
+      // No-op se o período já é esse — é o que tira o timer do backoff e o que aplica
+      // uma mudança de intervalo feita pelo admin em Configurações.
+      schedulePresence();
+      presenceRefreshOnlineIfVisible();
+    } catch (e) {
+      presenceFailures++;
+      // Backoff: rede caindo não deve virar um martelo de requisições. Abaixo de 2
+      // falhas seguidas mantém o ritmo (pode ser só um soluço).
+      if (presenceFailures >= 2) {
+        const backoff = Math.min(
+          presenceIntervalMs * Math.pow(2, presenceFailures - 1),
+          PRESENCE_BACKOFF_MAX_MS,
+        );
+        schedulePresence(backoff);
+      }
+    }
+  }
+
+  function startPresence() {
+    if (!currentUser) return;
+    presenceIntervalMs = presenceIntervalSec() * 1000;
+    presenceFailures = 0;
+    schedulePresence();
+    // Primeira batida imediata: sem ela o usuário só ficaria online depois de um
+    // intervalo inteiro, e o F5 pareceria uma saída.
+    presenceBeat();
+  }
+
+  // reason: "closed" | "logout" para avisar o servidor; falsy = só parar o timer.
+  function stopPresence(reason) {
+    if (presenceTimer) {
+      clearInterval(presenceTimer);
+      presenceTimer = null;
+      presenceTimerMs = 0;
+    }
+    if (reason) sendPresenceOffline(reason);
+  }
+
+  // Beacon: é o único jeito confiável de avisar no fechamento da aba (um fetch normal é
+  // cancelado). getInput() no PHP lê php://input sem checar Content-Type, então um Blob
+  // JSON parseia normal; é same-origin e o sendBeacon manda credenciais.
+  function sendPresenceOffline(reason) {
+    if (!currentUser || !presenceTabToken) return;
+    const body = new Blob(
+      [JSON.stringify({ tab: presenceTabToken, reason: reason || "closed" })],
+      { type: "application/json" },
+    );
+    const url = `${API}/presence.php?action=offline`;
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon(url, body)) return;
+    } catch (e) {
+      /* cai no fetch abaixo */
+    }
+    fetch(url, {
+      method: "POST",
+      credentials: "include",
+      keepalive: true,
+      body,
+    }).catch(() => {});
+  }
+
+  // Mantém a coluna de presença da tela de Usuários viva sem polling dedicado: só pede
+  // quando um admin está de fato olhando para ela.
+  async function presenceRefreshOnlineIfVisible() {
+    if (!is("admin")) return;
+    const active = $(".nav-link.active[data-view]");
+    if (!active || active.dataset.view !== "users") return;
+    try {
+      await loadPresenceOnline();
+      renderUsers();
+    } catch (e) {
+      /* silencioso: é só atualização de status */
     }
   }
 
@@ -1210,6 +1422,7 @@
     if (viewName === "logs") renderLogs();
     if (viewName === "trash") renderTrash();
     if (viewName === "reanalysis-log") renderReanalysisLog();
+    if (viewName === "presence-log") renderPresenceLog();
     if (viewName === "compliance-analysis") renderComplianceAnalysis();
   }
 
@@ -3680,6 +3893,32 @@
     return `${escapeHtml(String(limite))} / ${escapeHtml(String(horas))}h`;
   }
 
+  // Presença na tela de Usuários. O endpoint é requireRole('admin'), então só admin
+  // popula o mapa; para os demais ele fica vazio e a coluna não mente (mostra "—").
+  async function loadPresenceOnline() {
+    if (!is("admin")) return;
+    try {
+      const rows = await apiGet("presence.php?online=1");
+      const map = {};
+      (Array.isArray(rows) ? rows : []).forEach((r) => {
+        map[String(r.user_id)] = r;
+      });
+      presenceOnlineMap = map;
+    } catch (e) {
+      // Falhou: não zera. Um mapa desatualizado é melhor que uma coluna inteira de "—".
+    }
+  }
+
+  function presenceStatusHtml(u) {
+    const row = presenceOnlineMap[String(u.id)];
+    if (!row) {
+      return `<span class="presence-label"><span class="presence-dot"></span>Offline</span>`;
+    }
+    const since = escapeHtml(formatDateTime(row.entered_at));
+    return `<span class="presence-label"><span class="presence-dot online"></span>Online</span>` +
+      `<span class="presence-since">desde ${since}</span>`;
+  }
+
   function renderUsers() {
     const tbody = $("#usersTableBody");
     tbody.innerHTML = users
@@ -3692,6 +3931,7 @@
           <td><span class="role-tag ${u.role}">${roleLabel(u.role)}</span></td>
           <td><span class="status-badge ${u.active ? "done" : "pending"}">${u.active ? "Ativo" : "Inativo"}</span></td>
           <td style="font-size:0.8rem">${userQuotaLabel(u)}</td>
+          <td style="font-size:0.8rem">${presenceStatusHtml(u)}</td>
           <td>
             <div class="row-actions">
               <button class="row-action-btn" data-edit-user="${u.id}" title="Editar">✏️</button>
@@ -4990,6 +5230,12 @@
       const days = Number.isFinite(secs) && secs >= 300 ? Math.round(secs / 86400) : 5;
       sess.value = Math.min(days, 365);
     }
+    // Presença: os dois campos já saem clampeados dos acessores, que são o ponto único
+    // de leitura (os mesmos que o heartbeat usa).
+    const intervalInput = $("#settingPresenceInterval");
+    if (intervalInput) intervalInput.value = presenceIntervalSec();
+    const timeoutInput = $("#settingPresenceTimeout");
+    if (timeoutInput) timeoutInput.value = presenceTimeoutSec();
   }
 
   async function saveSettings() {
@@ -4997,14 +5243,15 @@
     const btn = $("#btnSaveSettings");
     if (btn) btn.disabled = true;
     try {
+      // Valida TUDO antes de salvar qualquer coisa. O código antigo dava `return` no
+      // primeiro campo inválido: um intervalo de presença errado impedia de salvar o
+      // limiar (e vice-versa), e o aviso só aparecia para o primeiro da fila.
       const thresholdInput = $("#settingBulkThreshold");
       const n = parseInt(thresholdInput ? thresholdInput.value : "", 10);
       if (!Number.isFinite(n) || n < 1 || n > 10000) {
         alert("Informe um valor inteiro entre 1 e 10000.");
         return;
       }
-      const res = await apiPut("settings.php", { key: "bulk_confirm_threshold", value: n });
-      appSettings.bulk_confirm_threshold = String(res && res.value != null ? res.value : n);
 
       const sessInput = $("#settingSessionLifetime");
       const days = parseInt(sessInput ? sessInput.value : "", 10);
@@ -5012,8 +5259,60 @@
         alert("Informe a duração da sessão entre 1 e 365 dias.");
         return;
       }
+
+      const intervalInput = $("#settingPresenceInterval");
+      const interval = parseInt(intervalInput ? intervalInput.value : "", 10);
+      if (
+        !Number.isFinite(interval) ||
+        interval < PRESENCE_INTERVAL_MIN ||
+        interval > PRESENCE_INTERVAL_MAX
+      ) {
+        alert(
+          `Informe o intervalo do heartbeat entre ${PRESENCE_INTERVAL_MIN} e ${PRESENCE_INTERVAL_MAX} segundos.`,
+        );
+        return;
+      }
+
+      const timeoutInput = $("#settingPresenceTimeout");
+      const timeout = parseInt(timeoutInput ? timeoutInput.value : "", 10);
+      if (
+        !Number.isFinite(timeout) ||
+        timeout < PRESENCE_TIMEOUT_MIN ||
+        timeout > PRESENCE_TIMEOUT_MAX
+      ) {
+        alert(
+          `Informe o tempo até offline entre ${PRESENCE_TIMEOUT_MIN} e ${PRESENCE_TIMEOUT_MAX} segundos.`,
+        );
+        return;
+      }
+
+      const res = await apiPut("settings.php", { key: "bulk_confirm_threshold", value: n });
+      appSettings.bulk_confirm_threshold = String(res && res.value != null ? res.value : n);
+
       const res2 = await apiPut("settings.php", { key: "session_lifetime", value: days * 86400 });
       appSettings.session_lifetime = String(res2 && res2.value != null ? res2.value : days * 86400);
+
+      const res3 = await apiPut("settings.php", {
+        key: "presence_heartbeat_interval",
+        value: interval,
+      });
+      appSettings.presence_heartbeat_interval = String(
+        res3 && res3.value != null ? res3.value : interval,
+      );
+
+      const res4 = await apiPut("settings.php", {
+        key: "presence_offline_timeout",
+        value: timeout,
+      });
+      appSettings.presence_offline_timeout = String(
+        res4 && res4.value != null ? res4.value : timeout,
+      );
+
+      // O timer está rodando com o intervalo antigo: realinha agora. (O heartbeat também
+      // reagenda quando o servidor devolve um intervalo diferente, mas só no fim do ciclo
+      // atual — isso aqui torna a mudança imediata.)
+      presenceIntervalMs = presenceIntervalSec() * 1000;
+      schedulePresence();
 
       showToast("Configuração salva.", "success");
     } catch (err) {
@@ -5295,6 +5594,108 @@
       tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar os pedidos de reanálise.</p></div></td></tr>`;
       if (infoEl) infoEl.textContent = "";
       console.error("Erro ao carregar o log de reanálise:", e);
+    }
+  }
+
+  // ============================================
+  //  REGISTRO DE PRESENÇA (ADMIN)
+  // ============================================
+  // Espelha o LIMIT de api/presence.php. O histórico é append-only e cresce sem limite,
+  // então o corte precisa ser visível, não silencioso.
+  const PRESENCE_LOG_LIMIT = 500;
+
+  const PRESENCE_EXIT_LABELS = {
+    closed: "Fechou a aba",
+    timeout: "Tempo esgotado",
+    logout: "Saiu",
+  };
+
+  // Duração vem em SEGUNDOS do servidor (TIMESTAMPDIFF), nunca do relógio do cliente.
+  // `0` é válido (sessão de menos de 1s) — por isso checa-se null/undefined/"", não falsy.
+  function formatPresenceDuration(seconds) {
+    if (seconds === null || seconds === undefined || seconds === "") return "—";
+    const total = Number(seconds);
+    if (!Number.isFinite(total) || total < 0) return "—";
+    const s = Math.floor(total);
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m}min`;
+    return `${Math.floor(m / 60)}h ${m % 60}min`;
+  }
+
+  async function renderPresenceLog() {
+    const tbody = $("#presenceLogBody");
+    if (!tbody) return;
+
+    const userSelect = $("#filterPresenceUser");
+    const dateInput = $("#filterPresenceDate");
+    const infoEl = $("#presenceLogInfo");
+
+    // Opções do filtro saem do global `users`, preservando a escolha atual (mesmo padrão
+    // de renderLogs e renderReanalysisLog).
+    if (userSelect) {
+      const atual = userSelect.value;
+      userSelect.innerHTML = '<option value="">Todos os Usuários</option>';
+      users.forEach((u) => {
+        userSelect.innerHTML += `<option value="${escapeAttr(String(u.id))}" ${String(u.id) === String(atual) ? "selected" : ""}>${escapeHtml(u.name)} (${escapeHtml(roleLabel(u.role))})</option>`;
+      });
+    }
+
+    // Sem data por padrão: filtrar por "hoje" esconderia justamente quem NÃO entrou hoje,
+    // que é o dado que o admin costuma procurar.
+    const date = (dateInput?.value || "").trim();
+    const userId = userSelect?.value || "";
+
+    const qs = [];
+    if (date) qs.push(`date=${encodeURIComponent(date)}`);
+    if (userId) qs.push(`user_id=${encodeURIComponent(userId)}`);
+    const url = "presence.php" + (qs.length ? `?${qs.join("&")}` : "");
+
+    try {
+      const rows = await apiGet(url);
+      const data = Array.isArray(rows) ? rows : [];
+
+      if (!data.length) {
+        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum acesso registrado.</p></div></td></tr>`;
+        if (infoEl) infoEl.textContent = "Nenhum acesso";
+        return;
+      }
+
+      tbody.innerHTML = data
+        .map((r) => {
+          // still_open vem do servidor (exited_at IS NULL): é o que distingue "saiu" de
+          // "ainda está aqui" sem o front precisar comparar datas.
+          const aberto = !!r.still_open;
+          const papel = r.user_role
+            ? ` <span class="role-tag ${escapeAttr(String(r.user_role))}">${escapeHtml(roleLabel(r.user_role))}</span>`
+            : "";
+          const saiu = aberto
+            ? `<span class="presence-label"><span class="presence-dot online"></span>Em aberto</span>`
+            : escapeHtml(formatDateTime(r.exited_at));
+          const motivo = aberto
+            ? "—"
+            : escapeHtml(PRESENCE_EXIT_LABELS[r.exit_reason] || r.exit_reason || "—");
+          return `<tr>
+            <td>${escapeHtml(r.user_name || "—")}${papel}</td>
+            <td style="white-space:nowrap">${escapeHtml(formatDateTime(r.entered_at))}</td>
+            <td style="white-space:nowrap">${saiu}</td>
+            <td style="white-space:nowrap">${escapeHtml(formatPresenceDuration(r.duration_seconds))}</td>
+            <td>${motivo}</td>
+            <td style="white-space:nowrap">${escapeHtml(r.last_seen_at ? formatDateTime(r.last_seen_at) : "—")}</td>
+          </tr>`;
+        })
+        .join("");
+
+      if (infoEl) {
+        infoEl.textContent =
+          data.length === PRESENCE_LOG_LIMIT
+            ? `Mostrando os ${PRESENCE_LOG_LIMIT} acessos mais recentes — use o filtro de data para ver um período.`
+            : `${data.length} acesso(s)`;
+      }
+    } catch (e) {
+      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar o registro de presença.</p></div></td></tr>`;
+      if (infoEl) infoEl.textContent = "";
+      console.error("Erro ao carregar o registro de presença:", e);
     }
   }
 
@@ -5896,6 +6297,12 @@
     const filterReanalysisUser = $("#filterReanalysisUser");
     if (filterReanalysisUser) filterReanalysisUser.addEventListener("change", renderReanalysisLog);
 
+    // Registro de Presença: data + usuário, mesmo padrão (sem debounce).
+    const filterPresenceDate = $("#filterPresenceDate");
+    if (filterPresenceDate) filterPresenceDate.addEventListener("change", renderPresenceLog);
+    const filterPresenceUser = $("#filterPresenceUser");
+    if (filterPresenceUser) filterPresenceUser.addEventListener("change", renderPresenceLog);
+
     // Periodic analysis filters
     const handlePeriodicFilterChange = () => {
       // COMENTADO: clearHistoryPreloadQueue() não necessário com history_batch direto
@@ -6037,6 +6444,26 @@
     $("#btnSendMessage").addEventListener("click", (e) => {
       e.preventDefault();
       sendMessage();
+    });
+
+    // ---- Presença: saída e volta da aba ----
+    // pagehide (e NÃO beforeunload/unload): beforeunload não é confiável no iOS Safari e
+    // um listener nele pode desqualificar a página do bfcache; unload está deprecado e
+    // quebra o bfcache. pagehide é o único que cobre fechar, navegar e entrar no bfcache.
+    window.addEventListener("pagehide", (e) => {
+      // persisted = a página foi para o bfcache (voltar/avançar) e pode ressuscitar:
+      // não fecha a sessão. Se ela não voltar, a varredura do servidor fecha por timeout.
+      stopPresence(e.persisted ? false : "closed");
+    });
+    // Voltou do bfcache sem recarregar: o timer foi limpo no pagehide, religa.
+    window.addEventListener("pageshow", (e) => {
+      if (e.persisted) startPresence();
+    });
+    // Aba oculta CONTA como online (decisão explícita), então este listener NÃO pausa
+    // nada. Só manda uma batida extra ao voltar: Chrome acelera o timer de aba oculta
+    // para ~1/min e a volta é a hora de tirar o usuário da marca de "quase estourando".
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden && currentUser) presenceBeat();
     });
   }
 

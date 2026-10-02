@@ -113,6 +113,11 @@
             <span class="nav-icon">🔁</span>
             <span>Logs de Reanálise</span>
           </a>
+          <!-- Registro de presença (online/offline por heartbeat): admin-only -->
+          <a href="#" class="nav-link" data-view="presence-log">
+            <span class="nav-icon">🕘</span>
+            <span>Registro de Presença</span>
+          </a>
           <a href="#" class="nav-link" data-view="settings">
             <span class="nav-icon">⚙️</span>
             Configurações
@@ -368,6 +373,7 @@
                   <th>Perfil</th>
                   <th>Status</th>
                   <th>Cota de Reanálise</th>
+                  <th>Presença</th>
                   <th>Ações</th>
                 </tr>
               </thead>
@@ -447,6 +453,44 @@
               <tbody id="reanalysisLogBody"></tbody>
             </table>
             <div class="table-footer"><span id="reanalysisLogInfo"></span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== VIEW: REGISTRO DE PRESENÇA (ADMIN) ===== -->
+      <div class="view-panel" id="viewPresenceLog">
+        <div class="dashboard">
+          <div class="table-section">
+            <div class="table-header">
+              <h3>🕘 Registro de Presença</h3>
+              <div class="table-actions" style="display:flex; align-items:center; gap:12px; margin-left:auto;">
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterPresenceDate" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Data</label>
+                  <!-- Sem pré-preenchimento de propósito: filtrar por "hoje" esconderia
+                       justamente quem NÃO entrou hoje. O filtro usa a data de ENTRADA. -->
+                  <input type="date" class="filter-date" id="filterPresenceDate" title="Deixe em branco para ver todos os períodos.">
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterPresenceUser" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Usuário</label>
+                  <select class="filter-select" id="filterPresenceUser">
+                    <option value="">Todos os Usuários</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div style="padding:12px 24px; font-size:0.78rem; color:var(--text-muted); border-bottom:1px solid var(--border);">
+              Online = aba/janela aberta (aba minimizada ou em segundo plano <strong>também conta</strong>).
+              A saída é registrada ao fechar a aba, ao sair, ou quando o heartbeat para de chegar.
+            </div>
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Usuário</th><th>Entrou</th><th>Saiu</th><th>Duração</th><th>Motivo</th><th>Última batida</th>
+                </tr>
+              </thead>
+              <tbody id="presenceLogBody"></tbody>
+            </table>
+            <div class="table-footer"><span id="presenceLogInfo"></span></div>
           </div>
         </div>
       </div>
@@ -558,6 +602,23 @@
                 <input type="number" class="form-input" id="settingSessionLifetime" min="1" max="365" step="1" value="5" style="max-width:160px;">
                 <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
                   Define por quantos dias o usuário permanece logado. O novo valor vale para as próximas sessões (entre 1 e 365 dias).
+                </p>
+              </div>
+              <div class="form-group" style="max-width:420px; margin-top:8px;">
+                <label for="settingPresenceInterval">Intervalo do heartbeat de presença (segundos)</label>
+                <input type="number" class="form-input" id="settingPresenceInterval" min="15" max="300" step="1" value="60" style="max-width:160px;">
+                <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
+                  De quanto em quanto tempo a aba avisa que continua aberta (entre 15 e 300).
+                  Aba minimizada ou em segundo plano <strong>continua contando como online</strong>.
+                </p>
+              </div>
+              <div class="form-group" style="max-width:420px; margin-top:8px;">
+                <label for="settingPresenceTimeout">Tempo sem bater até considerar offline (segundos)</label>
+                <input type="number" class="form-input" id="settingPresenceTimeout" min="60" max="900" step="1" value="150" style="max-width:160px;">
+                <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
+                  Se o heartbeat parar de chegar (aba fechada sem avisar, queda de rede, máquina
+                  suspensa), a sessão é encerrada após esse tempo. Na prática nunca vale menos que
+                  o intervalo + 30s, porque o navegador atrasa timers de aba oculta (entre 60 e 900).
                 </p>
               </div>
             </div>
