@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
   -- e não de calendário — janela de calendário zeraria à meia-noite.
   reanalysis_limit        INT UNSIGNED DEFAULT NULL COMMENT 'Reanálises permitidas na janela; NULL = sem limite',
   reanalysis_window_hours INT UNSIGNED DEFAULT NULL COMMENT 'Tamanho da janela em horas; NULL = sem limite',
+  track_presence          TINYINT(1)   NOT NULL DEFAULT 1 COMMENT '1 = rastrear presença; 0 = ignorar',
   created_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at  TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
@@ -379,8 +380,9 @@ CREATE TABLE IF NOT EXISTS `periodic_reanalysis_log` (
 -- presence_tabs     = 1 linha por aba viva. É o que faz "fechar 1 de N abas" não
 --   marcar offline: a sessão só fecha quando NOT EXISTS aba viva.
 --
--- Decisão explícita: aba em segundo plano ou minimizada CONTA COMO ONLINE. O heartbeat
--- não pausa com document.hidden; só fecha a aba ou estoura o timeout.
+-- Aba em segundo plano ou minimizada: comportamento CONFIGURÁVEL pelo admin via
+-- app_settings.presence_track_minimized (padrão 1 = conta como online). Quando 0,
+-- o front pausa o heartbeat em document.hidden e volta ao reaparecer.
 --
 -- DESVIO DO PADRÃO DA CASA: DATETIME em vez de TIMESTAMP. (a) TIMESTAMP para em 2038;
 -- (b) TIMESTAMP converte na escrita/leitura por @@time_zone, e este projeto já sofreu
@@ -396,9 +398,16 @@ CREATE TABLE IF NOT EXISTS `presence_sessions` (
   `exit_reason`  VARCHAR(20)     DEFAULT NULL COMMENT 'closed | timeout | logout',
 
   INDEX idx_ps_user_entered (user_id, entered_at),
+  -- (user_id, exited_at): serve à graça anti-F5 e ao histórico filtrado por usuário.
+  -- Adicionado depois; api/presence.php cria em instalações antigas via SHOW INDEX.
+  INDEX idx_ps_user_exited  (user_id, exited_at),
   INDEX idx_ps_open         (exited_at, last_seen_at),
   INDEX idx_ps_entered      (entered_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- RETENÇÃO: presence_sessions é append-only e cresce para sempre sem expurgo. A varredura
+-- apaga em lote (LIMIT 1000) as sessões FECHADAS com mais de presence_retention_days dias.
+-- 0 = NUNCA expurgar (zero é valor válido, não "ausente" — nunca checar com `if ($v)`).
 
 -- Duração NÃO é coluna: gerada não pode chamar NOW() (não determinística) e calculada
 -- estaria sempre errada na linha aberta. Computa na leitura com
@@ -576,6 +585,11 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 -- ALTER TABLE users ADD COLUMN reanalysis_limit INT UNSIGNED DEFAULT NULL COMMENT 'Reanálises permitidas na janela; NULL = sem limite';
 -- ALTER TABLE users ADD COLUMN reanalysis_window_hours INT UNSIGNED DEFAULT NULL COMMENT 'Tamanho da janela em horas; NULL = sem limite';
 
+-- users.track_presence (1 = rastrear presença; 0 = ignorar). A api/presence.php e
+-- api/users.php toleram a coluna ausente (SHOW COLUMNS), então a presença continua
+-- funcionando sem ela — só sem controle individual por usuário.
+-- ALTER TABLE users ADD COLUMN track_presence TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1 = rastrear presença; 0 = ignorar';
+
 -- app_settings (criada automaticamente pela api/settings.php no primeiro GET/PUT;
 -- script manual equivalente à definição da tabela no topo deste arquivo)
 -- CREATE TABLE IF NOT EXISTS app_settings (
@@ -595,9 +609,11 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 --   last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 --   exit_reason VARCHAR(20) DEFAULT NULL,
 --   INDEX idx_ps_user_entered (user_id, entered_at),
+--   INDEX idx_ps_user_exited (user_id, exited_at),
 --   INDEX idx_ps_open (exited_at, last_seen_at),
 --   INDEX idx_ps_entered (entered_at)
 -- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- ALTER TABLE presence_sessions ADD INDEX idx_ps_user_exited (user_id, exited_at);
 -- CREATE TABLE IF NOT EXISTS presence_tabs (
 --   tab_token VARCHAR(64) NOT NULL PRIMARY KEY,
 --   session_id INT UNSIGNED NOT NULL,
@@ -613,6 +629,8 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 -- os defaults batem com as constantes em api/presence.php):
 -- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('presence_heartbeat_interval', '60');
 -- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('presence_offline_timeout', '150');
+-- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('presence_retention_days', '180');
+-- INSERT IGNORE INTO app_settings (`key`, `value`) VALUES ('presence_track_minimized', '1');
 
 -- Índices para performance (lazy load) - execute se ainda não existirem
 -- CREATE INDEX idx_periodic_dominio ON periodic_analysis (dominio);

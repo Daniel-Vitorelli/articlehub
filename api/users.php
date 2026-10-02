@@ -31,8 +31,9 @@ function listUsers(): void
     // (id/nome/role/ativo, para filtros e seleção) — a cota de um usuário não é assunto de
     // gestor/redator, e incluí-la ali vazaria o dado.
     $quotaFields = hasUserQuotaColumns($db) ? ', reanalysis_limit, reanalysis_window_hours' : '';
+    $trackField = hasUserTrackPresenceColumn($db) ? ', track_presence' : '';
     if ($user['role'] === 'admin') {
-        $stmt = $db->query("SELECT id, name, email, role, active, created_at{$quotaFields} FROM users ORDER BY id");
+        $stmt = $db->query("SELECT id, name, email, role, active, created_at{$quotaFields}{$trackField} FROM users ORDER BY id");
     }
     else {
         $stmt = $db->query('SELECT id, name, role, active FROM users WHERE active = 1 ORDER BY id');
@@ -48,6 +49,11 @@ function hasUserQuotaColumns(PDO $db): bool
 {
     return (bool)$db->query("SHOW COLUMNS FROM users LIKE 'reanalysis_limit'")->fetch()
         && (bool)$db->query("SHOW COLUMNS FROM users LIKE 'reanalysis_window_hours'")->fetch();
+}
+
+function hasUserTrackPresenceColumn(PDO $db): bool
+{
+    return (bool)$db->query("SHOW COLUMNS FROM users LIKE 'track_presence'")->fetch();
 }
 
 /**
@@ -110,13 +116,20 @@ function createUser(): void
     $quota = normalizeUserQuota($input);
     $quotaCols = hasUserQuotaColumns($db) ? ', reanalysis_limit, reanalysis_window_hours' : '';
     $quotaVals = $quotaCols ? ', ?, ?' : '';
+    // Rastreamento de presença. DEFAULT 1 no banco, mas o admin pode desligar no formulário.
+    $trackCols = hasUserTrackPresenceColumn($db) ? ', track_presence' : '';
+    $trackVals = $trackCols ? ', ?' : '';
+    $trackVal = isset($input['track_presence']) ? (int)$input['track_presence'] : 1;
     $params = [$name, $email, $password, $role];
     if ($quotaCols) {
         $params[] = $quota['limit'];
         $params[] = $quota['hours'];
     }
+    if ($trackCols) {
+        $params[] = $trackVal;
+    }
 
-    $stmt = $db->prepare("INSERT INTO users (name, email, password, role, active{$quotaCols}) VALUES (?, ?, ?, ?, 1{$quotaVals})");
+    $stmt = $db->prepare("INSERT INTO users (name, email, password, role, active{$quotaCols}{$trackCols}) VALUES (?, ?, ?, ?, 1{$quotaVals}{$trackVals})");
     $stmt->execute($params);
 
     $newId = (int)$db->lastInsertId();
@@ -169,13 +182,22 @@ function updateUser(): void
     $quotaSet = hasUserQuotaColumns($db) ? ', reanalysis_limit = ?, reanalysis_window_hours = ?' : '';
     $quotaParams = $quotaSet ? [$quota['limit'], $quota['hours']] : [];
 
+    // track_presence: campo ausente do payload = mantém o valor atual.
+    $trackSet = hasUserTrackPresenceColumn($db) ? ', track_presence = ?' : '';
+    $trackParams = [];
+    if ($trackSet) {
+        $trackParams[] = array_key_exists('track_presence', $input)
+            ? ((int)$input['track_presence'] ? 1 : 0)
+            : (int)($user['track_presence'] ?? 1);
+    }
+
     if ($password) {
-        $stmt = $db->prepare("UPDATE users SET name = ?, email = ?, password = ?, role = ?{$quotaSet} WHERE id = ?");
-        $stmt->execute(array_merge([$name, $email, $password, $role], $quotaParams, [$id]));
+        $stmt = $db->prepare("UPDATE users SET name = ?, email = ?, password = ?, role = ?{$quotaSet}{$trackSet} WHERE id = ?");
+        $stmt->execute(array_merge([$name, $email, $password, $role], $quotaParams, $trackParams, [$id]));
     }
     else {
-        $stmt = $db->prepare("UPDATE users SET name = ?, email = ?, role = ?{$quotaSet} WHERE id = ?");
-        $stmt->execute(array_merge([$name, $email, $role], $quotaParams, [$id]));
+        $stmt = $db->prepare("UPDATE users SET name = ?, email = ?, role = ?{$quotaSet}{$trackSet} WHERE id = ?");
+        $stmt->execute(array_merge([$name, $email, $role], $quotaParams, $trackParams, [$id]));
     }
 
     jsonResponse(200, ['message' => 'Usuário atualizado.']);

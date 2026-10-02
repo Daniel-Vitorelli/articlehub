@@ -465,15 +465,29 @@
               <h3>🕘 Registro de Presença</h3>
               <div class="table-actions" style="display:flex; align-items:center; gap:12px; margin-left:auto;">
                 <div style="display:flex; align-items:center; gap:6px;">
-                  <label for="filterPresenceDate" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Data</label>
+                  <label for="filterPresenceFrom" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">De</label>
                   <!-- Sem pré-preenchimento de propósito: filtrar por "hoje" esconderia
                        justamente quem NÃO entrou hoje. O filtro usa a data de ENTRADA. -->
-                  <input type="date" class="filter-date" id="filterPresenceDate" title="Deixe em branco para ver todos os períodos.">
+                  <input type="date" class="filter-date" id="filterPresenceFrom" title="Data inicial (entrada). Deixe em branco para ver desde o começo.">
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterPresenceTo" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Até</label>
+                  <input type="date" class="filter-date" id="filterPresenceTo" title="Data final (entrada, inclusive). Deixe em branco para ver até hoje.">
                 </div>
                 <div style="display:flex; align-items:center; gap:6px;">
                   <label for="filterPresenceUser" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Usuário</label>
                   <select class="filter-select" id="filterPresenceUser">
                     <option value="">Todos os Usuários</option>
+                  </select>
+                </div>
+                <div style="display:flex; align-items:center; gap:6px;">
+                  <label for="filterPresenceReason" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Motivo</label>
+                  <select class="filter-select" id="filterPresenceReason">
+                    <option value="">Todos os motivos</option>
+                    <option value="open">Em aberto</option>
+                    <option value="closed">Fechou a aba</option>
+                    <option value="timeout">Tempo esgotado</option>
+                    <option value="logout">Saiu</option>
                   </select>
                 </div>
               </div>
@@ -490,7 +504,12 @@
               </thead>
               <tbody id="presenceLogBody"></tbody>
             </table>
-            <div class="table-footer"><span id="presenceLogInfo"></span></div>
+            <div class="table-footer" style="display:flex; align-items:center; gap:12px;">
+              <span id="presenceLogInfo"></span>
+              <!-- Só aparece quando o total do período passa de uma página. O backend
+                   limita em 500 por requisição; acima disso, use o filtro de período. -->
+              <button type="button" class="btn-secondary" id="btnPresenceLoadMore" hidden style="margin-left:auto;">Carregar mais</button>
+            </div>
           </div>
         </div>
       </div>
@@ -619,6 +638,25 @@
                   Se o heartbeat parar de chegar (aba fechada sem avisar, queda de rede, máquina
                   suspensa), a sessão é encerrada após esse tempo. Na prática nunca vale menos que
                   o intervalo + 30s, porque o navegador atrasa timers de aba oculta (entre 60 e 900).
+                </p>
+              </div>
+              <div class="form-group" style="max-width:420px; margin-top:8px;">
+                <label for="settingPresenceRetention">Retenção do histórico de presença (dias)</label>
+                <input type="number" class="form-input" id="settingPresenceRetention" min="0" max="3650" step="1" value="180" style="max-width:160px;">
+                <p class="text-muted" style="margin:8px 0 0; font-size:0.8rem;">
+                  Por quantos dias os acessos fechados ficam guardados (entre 0 e 3650).
+                  <strong>0 significa nunca expurgar</strong> — a tabela cresce sem limite.
+                  Sessões em aberto nunca são apagadas.
+                </p>
+              </div>
+              <div class="form-group" style="max-width:420px; margin-top:8px;">
+                <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                  <input type="checkbox" id="settingPresenceTrackMinimized" checked style="width:18px;height:18px;accent-color:var(--accent-primary);">
+                  Contar aba minimizada como online
+                </label>
+                <p class="text-muted" style="margin:4px 0 0 26px; font-size:0.8rem;">
+                  Quando ligado, o usuário continua online mesmo com a aba em segundo plano.
+                  Desligado: a presença pausa quando a aba fica oculta e volta ao reaparecer.
                 </p>
               </div>
             </div>
@@ -877,6 +915,15 @@
               <label>Janela (horas)</label>
               <input type="number" class="form-input" name="reanalysis_window_hours" min="1" placeholder="Padrão: 24">
             </div>
+          </div>
+          <div class="form-group" style="margin-top:4px;">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+              <input type="checkbox" name="track_presence" value="1" checked style="width:18px;height:18px;accent-color:var(--accent-primary);">
+              Rastrear presença
+            </label>
+            <p class="text-muted" style="margin:4px 0 0 26px; font-size:0.8rem;">
+              Desmarque para excluir este usuário do registro de presença.
+            </p>
           </div>
         </form>
       </div>

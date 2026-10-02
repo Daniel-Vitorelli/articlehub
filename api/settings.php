@@ -26,6 +26,10 @@ function ensureSettingsTable(): void
     // Os defaults batem com as constantes em api/presence.php.
     $stmt->execute(['presence_heartbeat_interval', '60']); // segundos
     $stmt->execute(['presence_offline_timeout', '150']); // segundos
+    // Retenção do histórico de presença, em dias. 0 = NUNCA expurgar (0 é valor válido).
+    $stmt->execute(['presence_retention_days', '180']); // dias
+    // Aba minimizada/oculta conta como online? 1 = sim (padrão), 0 = não.
+    $stmt->execute(['presence_track_minimized', '1']);
 }
 
 // Chaves editáveis + validadores (tipo, min, max)
@@ -39,6 +43,11 @@ function settingRules(): array
         // segurança é o max(timeout, interval + 30) em api/presence.php.
         'presence_heartbeat_interval' => ['type' => 'int', 'min' => 15, 'max' => 300], // segundos
         'presence_offline_timeout' => ['type' => 'int', 'min' => 60, 'max' => 900], // segundos
+        // Retenção do histórico de presença. min 0 porque ZERO É VALOR VÁLIDO: significa
+        // "nunca expurgar", não "ausente" (o validador não pode usar `if ($valor)`).
+        'presence_retention_days' => ['type' => 'int', 'min' => 0, 'max' => 3650], // dias
+        // Aba minimizada conta como online? 1 = sim, 0 = não.
+        'presence_track_minimized' => ['type' => 'int', 'min' => 0, 'max' => 1],
     ];
 }
 
