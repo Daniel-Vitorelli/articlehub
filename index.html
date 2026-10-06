@@ -87,6 +87,13 @@
             <span class="nav-icon">🔎</span>
             <span>Análise Periódica</span>
           </a>
+          <!-- Log de reanálise: o admin vê TODOS os pedidos; cada perfil vê os PRÓPRIOS. O
+               escopo é forçado no servidor (ver api/reanalysis_log.php), e por isso o link
+               não fica na seção admin-only. -->
+          <a href="#" class="nav-link" data-view="reanalysis-log">
+            <span class="nav-icon">🔁</span>
+            <span>Logs de Reanálise</span>
+          </a>
         </div>
 
         <!-- Admin Only Section -->
@@ -107,11 +114,6 @@
           <a href="#" class="nav-link" data-view="niches">
             <span class="nav-icon">📂</span>
             Nichos
-          </a>
-          <!-- Auditoria dos pedidos de reanálise: restrito a admin (ver api/reanalysis_log.php) -->
-          <a href="#" class="nav-link" data-view="reanalysis-log">
-            <span class="nav-icon">🔁</span>
-            <span>Logs de Reanálise</span>
           </a>
           <!-- Registro de presença (online/offline por heartbeat): admin-only -->
           <a href="#" class="nav-link" data-view="presence-log">
@@ -423,7 +425,7 @@
         </div>
       </div>
 
-      <!-- ===== VIEW: LOGS DE REANÁLISE (ADMIN) ===== -->
+      <!-- ===== VIEW: LOGS DE REANÁLISE (todos os perfis; escopo por papel no backend) ===== -->
       <div class="view-panel" id="viewReanalysisLog">
         <div class="dashboard">
           <div class="table-section">
@@ -436,7 +438,11 @@
                        então abrir filtrado por "hoje" mostraria vazio na maioria dos dias. -->
                   <input type="date" class="filter-date" id="filterReanalysisDate" title="Deixe em branco para ver todos os períodos.">
                 </div>
-                <div style="display:flex; align-items:center; gap:6px;">
+                <!-- Filtro de usuário: admin-only. Para os demais perfis todas as linhas são do
+                     próprio usuário, então escolher um nome só levaria a "nenhum resultado".
+                     A classe vai no AGRUPADOR (e o display:flex mora no CSS): o `.admin-only`
+                     zera o display inline ao reexibir, e o flex inline se perderia. -->
+                <div class="filter-inline admin-only">
                   <label for="filterReanalysisUser" style="font-size:0.75rem; color:var(--text-muted); text-transform:uppercase; font-weight:600; letter-spacing:0.5px; white-space:nowrap; cursor:pointer;">Usuário</label>
                   <select class="filter-select" id="filterReanalysisUser">
                     <option value="">Todos os Usuários</option>
@@ -452,7 +458,7 @@
                      "Status Anterior" é a análise imediatamente anterior deste post
                      (é um log de REanálise), com o mesmo clique-para-o-modal. -->
                 <tr>
-                  <th>Data/Hora</th><th>Usuário</th><th>Blog</th><th>Post</th><th>Origem</th><th>Status Anterior</th><th>Status</th><th>Link</th>
+                  <th>Data/Hora</th><th class="admin-only">Usuário</th><th>Blog</th><th>Post</th><th>Origem</th><th>Status Anterior</th><th>Status</th><th>Link</th>
                 </tr>
               </thead>
               <tbody id="reanalysisLogBody"></tbody>

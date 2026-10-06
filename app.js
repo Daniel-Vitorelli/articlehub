@@ -894,11 +894,13 @@
     if (["niches"].includes(viewName) && niches.length === 0) needs.push(apiGet("niches.php").then(d => niches = d));
     if (["settings"].includes(viewName) && Object.keys(appSettings).length === 0) needs.push(apiGet("settings.php").then(d => { appSettings = Array.isArray(d) ? {} : d; }).catch(() => {}));
     if (["trash"].includes(viewName) && deletedRequests.length === 0) needs.push(apiGet("requests.php?action=deleted").then(d => deletedRequests = d));
-    // Logs de Reanálise: `users` popula o filtro e `domains` dá a URL do post para o link.
-    // Os dois já vêm no loadAll, mas um revisor/admin que caia direto aqui sem eles veria o
-    // select vazio e a coluna de link sem sentido.
-    if (["reanalysis-log"].includes(viewName) && (users.length === 0 || domains.length === 0)) {
-      if (users.length === 0) needs.push(apiGet("users.php").then(d => users = d));
+    // Logs de Reanálise: `domains` dá a URL do post para a coluna Link. Os dois já vêm no
+    // loadAll, mas quem caia direto aqui sem eles veria a coluna sem sentido.
+    // `users` só alimenta o filtro/coluna de Usuário, que é ADMIN-ONLY — e users.php recusa
+    // `revisor` (403). Pedir a listagem para um perfil sem acesso REJEITARIA o Promise.all
+    // logo abaixo e derrubaria a view inteira, não só o filtro.
+    if (["reanalysis-log"].includes(viewName)) {
+      if (is("admin") && users.length === 0) needs.push(apiGet("users.php").then(d => users = d));
       if (domains.length === 0) needs.push(apiGet("domains.php").then(d => domains = d));
     }
     // Registro de Presença: `users` popula o filtro. Sem isto, um admin que caia direto
@@ -1690,6 +1692,9 @@
     // Views restritas ao admin. A análise periódica saiu desta lista: é acessível a todos os
     // perfis (o link também foi movido para a seção Principal). `settings` foi INCLUÍDA:
     // ela dependia só do menu escondido, então não havia guarda de rota nenhuma.
+    // `reanalysis-log` também SAIU: o admin vê todos os pedidos e cada perfil vê os PRÓPRIOS —
+    // o recorte é do servidor (api/reanalysis_log.php), não da rota. O link foi para a seção
+    // Principal junto da Análise Periódica.
     // presence-log entrou aqui porque a tela é requireRole('admin') no backend: sem o
     // guard, esconder o link do menu era a única proteção e qualquer perfil alcançava a
     // view chamando navigateTo (caindo no estado de erro do fetch).
@@ -1699,7 +1704,6 @@
         viewName === "languages" ||
         viewName === "niches" ||
         viewName === "settings" ||
-        viewName === "reanalysis-log" ||
         viewName === "presence-log") &&
       !is("admin")
     ) {
@@ -6051,9 +6055,13 @@
   };
 
   // Quantas colunas a tabela tem de fato — base do colspan das linhas de estado vazio/erro.
-  // Constante explícita em vez de número solto: acrescentar uma coluna e esquecer o colspan
-  // desalinha a mensagem sem gerar nenhum erro visível no console.
-  const REANALYSIS_LOG_COLS = 8;
+  // Função (e não constante) porque a coluna "Usuário" é ADMIN-ONLY: para os demais perfis
+  // todas as linhas são do próprio usuário, e repetir o nome dele em toda linha seria ruído.
+  // O número tem de bater com os <th> de index.html e com as <td> do template de
+  // renderReanalysisLog — esquecer o colspan desalinha a mensagem sem erro no console.
+  function reanalysisLogCols() {
+    return is("admin") ? 8 : 7;
+  }
 
   // Resumo que o próprio endpoint de reanálise grava ao criar a linha (ver
   // api/periodic_analysis.php). Distingue "ainda na fila" de "analisado, mas sem resumo" —
@@ -6146,8 +6154,9 @@
     const infoEl = $("#reanalysisLogInfo");
 
     // Filtro de usuário populado do global `users`, preservando a escolha atual (mesmo
-    // padrão de renderLogs).
-    if (userSelect) {
+    // padrão de renderLogs). Só para o admin: para os demais o filtro está escondido E o
+    // servidor ignora o `user_id` — populá-lo ofereceria uma escolha sem efeito.
+    if (userSelect && is("admin")) {
       const atual = userSelect.value;
       userSelect.innerHTML = '<option value="">Todos os Usuários</option>';
       users.forEach((u) => {
@@ -6158,7 +6167,9 @@
     // Sem filtro de data por padrão (ver comentário no index.html): pedidos de reanálise
     // são esporádicos, então um "hoje" fixo mostraria vazio na maioria dos dias.
     const date = (dateInput?.value || "").trim();
-    const userId = userSelect?.value || "";
+    // O `user_id` só é enviado pelo admin: para os demais o recorte é do servidor (que
+    // IGNORA o parâmetro), então mandá-lo só poluiria a URL.
+    const userId = is("admin") ? userSelect?.value || "" : "";
 
     const qs = [];
     if (date) qs.push(`date=${encodeURIComponent(date)}`);
@@ -6170,7 +6181,7 @@
       const data = Array.isArray(rows) ? rows : [];
 
       if (!data.length) {
-        tbody.innerHTML = `<tr><td colspan="${REANALYSIS_LOG_COLS}"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum pedido de reanálise encontrado.</p></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${reanalysisLogCols()}"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum pedido de reanálise encontrado.</p></div></td></tr>`;
         if (infoEl) infoEl.textContent = "Nenhum pedido";
         return;
       }
@@ -6205,9 +6216,16 @@
             ? `Análise anterior (${formatDateTime(r.prev_created_at)})`
             : "Análise anterior";
           reanalysisLogPrevLabels.set(idPrev, rotuloPrev);
+          // A coluna "Usuário" é ADMIN-ONLY: para os demais perfis todas as linhas são do
+          // próprio usuário, então o nome repetido em cada linha é ruído. A célula tem de sair
+          // JUNTO com o <th class="admin-only"> de index.html — e é por isso que o colspan
+          // vem de reanalysisLogCols() em vez de um número fixo.
+          const celulaUsuario = is("admin")
+            ? `<td>${escapeHtml(r.user_name || "—")}${papel}</td>`
+            : "";
           return `<tr>
             <td style="white-space:nowrap">${escapeHtml(formatDateTime(r.created_at))}</td>
-            <td>${escapeHtml(r.user_name || "—")}${papel}</td>
+            ${celulaUsuario}
             <td><div class="blog-name"><span class="blog-dot" style="background:${escapeAttr(d?.color || "#7f5af0")}"></span>${escapeHtml(r.dominio)}</div></td>
             <td>${r.id_post != null ? escapeHtml(String(r.id_post)) : "—"}</td>
             <td>${escapeHtml(REANALYSIS_ACTION_LABELS[r.action] || r.action)}</td>
@@ -6225,7 +6243,7 @@
             : `${data.length} pedido(s)`;
       }
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="${REANALYSIS_LOG_COLS}"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar os pedidos de reanálise.</p></div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${reanalysisLogCols()}"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar os pedidos de reanálise.</p></div></td></tr>`;
       if (infoEl) infoEl.textContent = "";
       console.error("Erro ao carregar o log de reanálise:", e);
     }

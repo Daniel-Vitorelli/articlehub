@@ -3,8 +3,11 @@
 //  ArticleHub — Reanalysis Log API
 //  GET ?date=YYYY-MM-DD&user_id=N -> lista os pedidos de reanálise
 //
-//  ADMIN-ONLY: o log diz quem pediu o quê e quando. Diferente da Análise Periódica
-//  (aberta a todos os perfis), este é um registro de auditoria e fica restrito.
+//  VISIBILIDADE: o ADMIN vê todos os pedidos (e pode filtrar por usuário); qualquer outro
+//  perfil vê APENAS os próprios. Antes a rota era requireRole('admin') — o log diz quem pediu
+//  o quê e quando, e passou a valer "cada um enxerga o que pediu". O escopo do não-admin é
+//  FORÇADO no servidor (ver o bloco de $where): a tela esconde o filtro de usuário, mas a URL
+//  é alcançável por qualquer sessão, então `?user_id=` não pode ser respeitado.
 //
 //  A tabela periodic_reanalysis_log é escrita por api/periodic_analysis.php
 //  (ver ensureReanalysisLogTable lá). Aqui só se lê.
@@ -33,7 +36,8 @@ listReanalysisLog();
 
 function listReanalysisLog(): void
 {
-    requireRole('admin');
+    $user = requireAuth();
+    $isAdmin = ($user['role'] ?? '') === 'admin';
     $db = getDB();
 
     // A tabela só nasce no primeiro POST de reanálise (ensureReanalysisLogTable, em
@@ -55,10 +59,19 @@ function listReanalysisLog(): void
     $date = dateParam('date');
     applySaoPauloDayFilter($where, $params, 'prl.created_at', $date);
 
-    $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
-    if ($userId) {
+    // Escopo por papel. Para não-admin o filtro é FORÇADO ao próprio id e o `user_id` da
+    // query é IGNORADO de propósito: concatená-lo deixaria qualquer sessão autenticada ler o
+    // log alheio trocando o número na URL (a tela esconde o filtro, mas isso não é proteção).
+    // O `id` vem da SESSÃO, nunca do cliente.
+    if ($isAdmin) {
+        $userId = isset($_GET['user_id']) && $_GET['user_id'] !== '' ? (int)$_GET['user_id'] : null;
+        if ($userId) {
+            $where[] = 'prl.user_id = ?';
+            $params[] = $userId;
+        }
+    } else {
         $where[] = 'prl.user_id = ?';
-        $params[] = $userId;
+        $params[] = (int)$user['id'];
     }
 
     $whereSql = $where ? 'WHERE ' . implode(' AND ', $where) : '';

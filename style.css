@@ -840,6 +840,15 @@ body::before {
   flex-wrap: wrap;
 }
 
+/* Agrupador "label + controle" das barras de filtro. É classe (e não style inline) porque o
+   `.admin-only` esconde/reexibe zerando o display inline — com o flex inline, reexibir
+   deixaria o agrupador em bloco. Usado pelo filtro de Usuário do Log de Reanálise. */
+.filter-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 /* Solicitações: título à esquerda, filtros + botão à direita */
 .table-header-requests {
   display: flex;
