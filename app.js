@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.7";
+  const APP_VERSION = "1.7.8";
   // ---- Presença (registro de presença) ----
   // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
   // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
@@ -2802,8 +2802,11 @@
     const infoEl = $("#complianceRequestInfo");
     if (infoEl) infoEl.innerHTML = "";
 
+    // "Analisar Novamente" não existe aqui: a linha do log JÁ É o pedido de reanálise.
+    // Oferecer a ação a partir do resultado convidaria a um segundo pedido em cima do
+    // primeiro, o que não é uma ação desta tela (ela é só leitura do histórico).
     const btn = $("#btnResetCompliance");
-    if (btn) btn.style.display = "";
+    if (btn) btn.style.display = "none";
 
     modal.dataset.periodicKey = "";
     modal.dataset.requestId = "";
