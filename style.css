@@ -1309,6 +1309,11 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   margin-bottom: 18px;
 }
 #modalCompliance.is-periodic .compliance-tabs { display: flex; }
+/* Modo LOG DE REANÁLISE: sem abas. Nessa tela não existe grupo (dominio+id_post), então
+   Histórico e Comentários não teriam o que listar — a barra ficaria com uma aba só, inútil.
+   A regra repete o display:none padrão acima de propósito: deixa "sem abas" como intenção
+   declarada do modo, e não como efeito colateral de não somar uma classe. */
+#modalCompliance.is-reanalysis-log .compliance-tabs { display: none; }
 /* No modo com abas o próprio rótulo da aba já nomeia a seção, então o botão de
    toggle, o divisor e o título antigos do histórico viram ruído — somem. */
 #modalCompliance.is-periodic #btnToggleComplianceHistory,

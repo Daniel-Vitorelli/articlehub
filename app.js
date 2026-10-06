@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.6";
+  const APP_VERSION = "1.7.7";
   // ---- Presença (registro de presença) ----
   // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
   // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
@@ -2713,19 +2713,40 @@
     return parts.join('<span class="compliance-modal-sep">·</span>');
   }
 
-  // Liga abas + subtítulo (análise periódica) e sempre abre na aba Resumo.
+  // Subtítulo do modal: "dominio · Post #id · [status]". As duas origens do modal
+  // (análise periódica e log de reanálise) escrevem o MESMO subtítulo — só o miolo difere.
+  function setComplianceModalSubtitle(latest, dominio, idPost) {
+    const sub = document.getElementById("complianceModalSubtitle");
+    if (!sub) return;
+    const html = complianceModalSubtitle(latest, dominio, idPost);
+    sub.innerHTML = html;
+    sub.style.display = html ? "" : "none";
+  }
+
+  // Modo ANÁLISE PERIÓDICA: com abas (Resumo / Histórico / Comentários), abrindo na Resumo.
+  // O `is-periodic` é o que liga a barra de abas (ver style.css).
   function setupComplianceChromeForPeriodic(latest, dominio, idPost) {
     const modal = document.getElementById("modalCompliance");
     if (!modal) return;
+    modal.classList.remove("is-reanalysis-log");
     modal.classList.add("is-periodic");
+    setComplianceModalSubtitle(latest, dominio, idPost);
+    modal.dataset.complianceTab = "";
+    activateComplianceTab("resumo");
+  }
 
-    const sub = document.getElementById("complianceModalSubtitle");
-    if (sub) {
-      const html = complianceModalSubtitle(latest, dominio, idPost);
-      sub.innerHTML = html;
-      sub.style.display = html ? "" : "none";
-    }
-
+  // Modo LOG DE REANÁLISE: sem abas.
+  // Aqui não existe grupo (dominio+id_post), então Histórico e Comentários não teriam o que
+  // listar — a barra ficava com uma única aba, que não serve para nada. Sem `is-periodic` a
+  // barra cai no display:none padrão do CSS e sobra só o painel do resumo, porque
+  // activateComplianceTab() oculta os outros dois.
+  function setupComplianceChromeForLog(latest, dominio, idPost) {
+    const modal = document.getElementById("modalCompliance");
+    if (!modal) return;
+    // Remove o `is-periodic` de uma abertura anterior: o modal é o MESMO nó nas duas telas.
+    modal.classList.remove("is-periodic");
+    modal.classList.add("is-reanalysis-log");
+    setComplianceModalSubtitle(latest, dominio, idPost);
     modal.dataset.complianceTab = "";
     activateComplianceTab("resumo");
   }
@@ -2734,7 +2755,9 @@
   function resetComplianceChromeForRequest() {
     const modal = document.getElementById("modalCompliance");
     if (!modal) return;
+    // Sai dos DOIS modos que usam abas/subtítulo: solicitação comum não tem nem um nem outro.
     modal.classList.remove("is-periodic");
+    modal.classList.remove("is-reanalysis-log");
     modal.dataset.complianceTab = "";
 
     const sub = document.getElementById("complianceModalSubtitle");
@@ -2782,27 +2805,17 @@
     const btn = $("#btnResetCompliance");
     if (btn) btn.style.display = "";
 
-    const histContainer = $("#complianceHistoryContainer");
-    if (histContainer) histContainer.style.display = "none";
-    const histBtn = $("#btnToggleComplianceHistory");
-    if (histBtn) histBtn.textContent = "📜 Ver Histórico";
-
     modal.dataset.periodicKey = "";
     modal.dataset.requestId = "";
     modal.classList.add("active");
     document.body.style.overflow = "hidden";
 
-    setupComplianceChromeForPeriodic(r, r.dominio, r.id_post);
+    // Sem abas: o log não tem grupo, então Histórico e Comentários não teriam o que listar.
+    setupComplianceChromeForLog(r, r.dominio, r.id_post);
 
-    // Sem grupo nesta tela → sem comentários nem histórico: as abas correspondentes saem
-    // do caminho em vez de mostrarem painéis vazios que não têm como preencher.
     modal.classList.remove("has-comments");
     const comments = $("#complianceCommentsBlock");
     if (comments) comments.style.display = "none";
-    const tabComments = modal.querySelector('[data-compliance-tab="comentarios"]');
-    if (tabComments) tabComments.style.display = "none";
-    const tabHist = modal.querySelector('[data-compliance-tab="historico"]');
-    if (tabHist) tabHist.style.display = "none";
     const emptyEl = $("#complianceHistoryEmpty");
     if (emptyEl) emptyEl.style.display = "none";
     const histBody = $("#complianceHistoryBody");
