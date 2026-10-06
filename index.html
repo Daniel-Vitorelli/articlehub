@@ -446,8 +446,12 @@
             </div>
             <table class="data-table">
               <thead>
+                <!-- Sem larguras fixas: nenhuma outra tabela do app usa width em th, e a
+                     .table-section já rola na horizontal quando as 8 colunas não cabem
+                     (mesmo comportamento da Análise Periódica). A coluna do resumo se
+                     limita sozinha pelo teto de .reanalysis-resumo-th (ver style.css). -->
                 <tr>
-                  <th>Data/Hora</th><th>Usuário</th><th>Blog</th><th>Post</th><th>Link</th><th>Origem</th>
+                  <th>Data/Hora</th><th>Usuário</th><th>Blog</th><th>Post</th><th>Origem</th><th>Status</th><th class="reanalysis-resumo-th">Resumo da Análise</th><th>Link</th>
                 </tr>
               </thead>
               <tbody id="reanalysisLogBody"></tbody>

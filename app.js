@@ -5885,6 +5885,43 @@
     reanalyze_bulk: "Em lote",
   };
 
+  // Quantas colunas a tabela tem de fato — base do colspan das linhas de estado vazio/erro.
+  // Constante explícita em vez de número solto: acrescentar uma coluna e esquecer o colspan
+  // desalinha a mensagem sem gerar nenhum erro visível no console.
+  const REANALYSIS_LOG_COLS = 8;
+
+  // Resumo que o próprio endpoint de reanálise grava ao criar a linha (ver
+  // api/periodic_analysis.php). Distingue "ainda na fila" de "analisado, mas sem resumo" —
+  // os dois podem chegar com status 'nao_analisado', mas só o primeiro traz esta sentinela.
+  const REANALYSIS_PENDING_RESUMO = "esperando re-analise";
+
+  function reanalysisLogStatusBadge(r) {
+    const status = r.status_compliance || "";
+    // Sem status (analysis_id NULL ou a linha foi apagada): o pedido existe, o vínculo não.
+    // Dizer "Não analisado" seria afirmar o que não se sabe — pode ter sido analisado.
+    if (!status) return "—";
+    const pendente =
+      status === "nao_analisado" &&
+      String(r.resumo_analise || "").trim().toLowerCase() === REANALYSIS_PENDING_RESUMO;
+    // "Aguardando" é o estado NORMAL de um pedido recém-criado, não uma falha: o badge é o
+    // mesmo do status cru (mesmas cores), mas com rótulo próprio — "Não analisado" nesta
+    // tela leria como problema, quando significa fila.
+    const label = pendente ? "Aguardando análise" : complianceStatusLabel(status);
+    const title = pendente
+      ? "Pedido registrado — aguardando o resultado da análise"
+      : complianceStatusLabel(status);
+    return `<span class="status-badge ${escapeHtml(status)}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
+  }
+
+  function reanalysisLogResumoCell(r) {
+    const txt = r.resumo_analise != null ? String(r.resumo_analise).trim() : "";
+    // A sentinela de fila não é resumo: repetir "esperando re-analise" ao lado de um badge
+    // que já diz "Aguardando análise" é ruído. A célula fica "—" até o crawler gravar texto.
+    if (!txt || txt.toLowerCase() === REANALYSIS_PENDING_RESUMO) return "—";
+    // Texto puro e escapado, com o conteúdo completo no title (a célula corta por CSS).
+    return `<span class="reanalysis-resumo" title="${escapeAttr(txt)}">${escapeHtml(txt)}</span>`;
+  }
+
   async function renderReanalysisLog() {
     const tbody = $("#reanalysisLogBody");
     if (!tbody) return;
@@ -5918,7 +5955,7 @@
       const data = Array.isArray(rows) ? rows : [];
 
       if (!data.length) {
-        tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum pedido de reanálise encontrado.</p></div></td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="${REANALYSIS_LOG_COLS}"><div class="empty-state"><div class="empty-icon">📭</div><p>Nenhum pedido de reanálise encontrado.</p></div></td></tr>`;
         if (infoEl) infoEl.textContent = "Nenhum pedido";
         return;
       }
@@ -5936,8 +5973,10 @@
             <td>${escapeHtml(r.user_name || "—")}${papel}</td>
             <td><div class="blog-name"><span class="blog-dot" style="background:${escapeAttr(d?.color || "#7f5af0")}"></span>${escapeHtml(r.dominio)}</div></td>
             <td>${r.id_post != null ? escapeHtml(String(r.id_post)) : "—"}</td>
-            <td>${periodicPostLink(d?.url, r.id_post, true)}</td>
             <td>${escapeHtml(REANALYSIS_ACTION_LABELS[r.action] || r.action)}</td>
+            <td>${reanalysisLogStatusBadge(r)}</td>
+            <td class="reanalysis-resumo-cell">${reanalysisLogResumoCell(r)}</td>
+            <td>${periodicPostLink(d?.url, r.id_post, true)}</td>
           </tr>`;
         })
         .join("");
@@ -5949,7 +5988,7 @@
             : `${data.length} pedido(s)`;
       }
     } catch (e) {
-      tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar os pedidos de reanálise.</p></div></td></tr>`;
+      tbody.innerHTML = `<tr><td colspan="${REANALYSIS_LOG_COLS}"><div class="empty-state"><div class="empty-icon">⚠️</div><p>Erro ao carregar os pedidos de reanálise.</p></div></td></tr>`;
       if (infoEl) infoEl.textContent = "";
       console.error("Erro ao carregar o log de reanálise:", e);
     }
