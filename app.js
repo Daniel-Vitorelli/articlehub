@@ -2324,12 +2324,7 @@
       return m[1].trim() ? { label: m[1].trim(), rest: "" } : null;
     }
     // "Rótulo:" simples — curto, capitalizado, sem ser URL nem frase longa.
-    if (
-      t.length <= 40 &&
-      t.endsWith(":") &&
-      /^[A-ZÀ-Ú0-9\[#*]/.test(t) &&
-      !/^https?:/i.test(t)
-    ) {
+    if (t.length <= 40 && t.endsWith(":") && /^[A-ZÀ-Ú0-9\[#*]/.test(t) && !/^https?:/i.test(t)) {
       const label = t.slice(0, -1).trim();
       if (label && !/[.!?]$/.test(label)) return { label, rest: "" };
     }
@@ -2747,7 +2742,10 @@
       sub.innerHTML = "";
       sub.style.display = "none";
     }
-    modal.querySelectorAll("[data-compliance-tab]").forEach((b) => b.classList.remove("active"));
+    modal.querySelectorAll("[data-compliance-tab]").forEach((b) => {
+      b.classList.remove("active");
+      b.style.display = "";
+    });
     // Todos os painéis visíveis, exatamente como o layout empilhado original.
     modal.querySelectorAll("[data-compliance-panel]").forEach((p) => {
       p.style.display = "";
@@ -2755,6 +2753,60 @@
     // ...exceto os comentários, que nunca existem em solicitação comum.
     const comments = document.getElementById("complianceCommentsBlock");
     if (comments) comments.style.display = "none";
+  }
+
+  // Mesmo modal do Resumo da Análise Periódica, aberto a partir do Log de Reanálise.
+  // A diferença é a origem do dado: aqui não existe grupo/cache — a própria linha do log
+  // já traz status e resumo (LEFT JOIN por analysis_id no endpoint).
+  function openComplianceModalForReanalysis(r) {
+    const raw = r.status_compliance || "";
+    if (!raw || raw === "nao_analisado") return;
+    const resumo = r.resumo_analise != null ? String(r.resumo_analise).trim() : "";
+    // Guarda própria (e não só o `abrivel` do badge): é aqui que um resumo mal formado
+    // viraria modal. A comparação é pelo valor inteiro, nunca por includes.
+    if (resumo === "" || resumo.toLowerCase() === REANALYSIS_PENDING_RESUMO) return;
+
+    const modal = $("#modalCompliance");
+    if (!modal) return;
+
+    const resumoEl = $("#complianceResumo");
+    if (resumoEl) {
+      resumoEl.innerHTML = renderComplianceResumo(resumo.replace(/\r\n?/g, "\n"));
+    }
+
+    // "Solicitante da reanálise" só faz sentido quando alguém pediu; no log a linha já é o
+    // pedido, e o nome já aparece na coluna Usuário — a linha fica oculta.
+    const infoEl = $("#complianceRequestInfo");
+    if (infoEl) infoEl.innerHTML = "";
+
+    const btn = $("#btnResetCompliance");
+    if (btn) btn.style.display = "";
+
+    const histContainer = $("#complianceHistoryContainer");
+    if (histContainer) histContainer.style.display = "none";
+    const histBtn = $("#btnToggleComplianceHistory");
+    if (histBtn) histBtn.textContent = "📜 Ver Histórico";
+
+    modal.dataset.periodicKey = "";
+    modal.dataset.requestId = "";
+    modal.classList.add("active");
+    document.body.style.overflow = "hidden";
+
+    setupComplianceChromeForPeriodic(r, r.dominio, r.id_post);
+
+    // Sem grupo nesta tela → sem comentários nem histórico: as abas correspondentes saem
+    // do caminho em vez de mostrarem painéis vazios que não têm como preencher.
+    modal.classList.remove("has-comments");
+    const comments = $("#complianceCommentsBlock");
+    if (comments) comments.style.display = "none";
+    const tabComments = modal.querySelector('[data-compliance-tab="comentarios"]');
+    if (tabComments) tabComments.style.display = "none";
+    const tabHist = modal.querySelector('[data-compliance-tab="historico"]');
+    if (tabHist) tabHist.style.display = "none";
+    const emptyEl = $("#complianceHistoryEmpty");
+    if (emptyEl) emptyEl.style.display = "none";
+    const histBody = $("#complianceHistoryBody");
+    if (histBody) histBody.innerHTML = "";
   }
 
   function openComplianceModalForPeriodic(key) {
@@ -3941,9 +3993,19 @@
     // checkbox de seleção, botões) — deixa o comportamento nativo funcionar.
     if (e.target.closest("a, button, input, select, textarea")) return;
     const tr = e.target.closest("#periodicAnalysisBody tr[data-periodic-key]");
-    if (!tr) return;
+    if (tr) {
+      e.preventDefault();
+      openComplianceModalForPeriodic(tr.dataset.periodicKey);
+      return;
+    }
+    // Log de reanálise: só o badge clicável abre (a linha inteira não é alvo — a coluna
+    // Link tem âncora própria, e clicar em "Usuário" não deveria abrir modal nenhum).
+    const badge = e.target.closest("#reanalysisLogBody .status-badge[data-reanalysis-badge]");
+    if (!badge) return;
+    const row = reanalysisLogRows.get(badge.dataset.reanalysisBadge);
+    if (!row) return;
     e.preventDefault();
-    openComplianceModalForPeriodic(tr.dataset.periodicKey);
+    openComplianceModalForReanalysis(row);
   });
 
   // Foco visual na linha da análise periódica (sem mudar layout)
@@ -5888,38 +5950,57 @@
   // Quantas colunas a tabela tem de fato — base do colspan das linhas de estado vazio/erro.
   // Constante explícita em vez de número solto: acrescentar uma coluna e esquecer o colspan
   // desalinha a mensagem sem gerar nenhum erro visível no console.
-  const REANALYSIS_LOG_COLS = 8;
+  const REANALYSIS_LOG_COLS = 7;
 
   // Resumo que o próprio endpoint de reanálise grava ao criar a linha (ver
   // api/periodic_analysis.php). Distingue "ainda na fila" de "analisado, mas sem resumo" —
   // os dois podem chegar com status 'nao_analisado', mas só o primeiro traz esta sentinela.
   const REANALYSIS_PENDING_RESUMO = "esperando re-analise";
 
-  function reanalysisLogStatusBadge(r) {
+  // A sentinela é comparada pelo VALOR INTEIRO (nunca por includes): um resumo de verdade
+  // que MENCIONE "re-análise" seria falso positivo. Vale como fila, porém, mesmo com um
+  // status diferente de nao_analisado: aí o texto é o marcador, não conteúdo a exibir —
+  // abrir o modal mostraria "esperando re-analise" para quem clicasse em "Aprovado".
+  function reanalysisLogResumoIsSentinela(r) {
+    return String(r.resumo_analise || "").trim().toLowerCase() === REANALYSIS_PENDING_RESUMO;
+  }
+
+  // Fila: ainda não há desfecho, então não há o que abrir em modal.
+  function reanalysisLogIsPending(r) {
+    return String(r.status_compliance || "") === "nao_analisado" && reanalysisLogResumoIsSentinela(r);
+  }
+
+  // Desfecho de cada linha, para o modal ler sem depender de cache de outra view.
+  // Repovoado a cada render (as linhas são substituídas, não recicladas).
+  const reanalysisLogRows = new Map();
+
+  // Mesmo padrão de periodicRowHtml: o badge de status vira a porta do modal
+  // (`.compliance-clickable`), e o clique é delegado — nada de onclick inline.
+  function reanalysisLogStatusBadge(r, uid) {
     const status = r.status_compliance || "";
     // Sem status (analysis_id NULL ou a linha foi apagada): o pedido existe, o vínculo não.
     // Dizer "Não analisado" seria afirmar o que não se sabe — pode ter sido analisado.
+    // E, sem desfecho, não há modal para abrir: fica texto mudo, sem a classe clicável.
     if (!status) return "—";
-    const pendente =
-      status === "nao_analisado" &&
-      String(r.resumo_analise || "").trim().toLowerCase() === REANALYSIS_PENDING_RESUMO;
-    // "Aguardando" é o estado NORMAL de um pedido recém-criado, não uma falha: o badge é o
-    // mesmo do status cru (mesmas cores), mas com rótulo próprio — "Não analisado" nesta
-    // tela leria como problema, quando significa fila.
-    const label = pendente ? "Aguardando análise" : complianceStatusLabel(status);
-    const title = pendente
-      ? "Pedido registrado — aguardando o resultado da análise"
-      : complianceStatusLabel(status);
-    return `<span class="status-badge ${escapeHtml(status)}" title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
-  }
 
-  function reanalysisLogResumoCell(r) {
-    const txt = r.resumo_analise != null ? String(r.resumo_analise).trim() : "";
-    // A sentinela de fila não é resumo: repetir "esperando re-analise" ao lado de um badge
-    // que já diz "Aguardando análise" é ruído. A célula fica "—" até o crawler gravar texto.
-    if (!txt || txt.toLowerCase() === REANALYSIS_PENDING_RESUMO) return "—";
-    // Texto puro e escapado, com o conteúdo completo no title (a célula corta por CSS).
-    return `<span class="reanalysis-resumo" title="${escapeAttr(txt)}">${escapeHtml(txt)}</span>`;
+    const sentinela = reanalysisLogResumoIsSentinela(r);
+    const pendente = status === "nao_analisado" && sentinela;
+    // Só abre quando há resumo formatável de verdade. "Aguardando análise" é o estado normal
+    // de um pedido recém-criado: o badge continua sendo o mesmo status cru (mesmas cores),
+    // mas com rótulo próprio — "Não analisado" nesta tela leria como problema, quando é fila.
+    const abrivel = !sentinela && String(r.resumo_analise || "").trim() !== "";
+    const label = pendente ? "Aguardando análise" : complianceStatusLabel(status);
+    const title = abrivel
+      ? "Ver resumo e histórico da análise"
+      : (pendente
+          ? "Pedido registrado — aguardando o resultado da análise"
+          : complianceStatusLabel(status));
+
+    // O gancho do modal só existe quando o badge é clicável: sem resumo não há o que abrir,
+    // e um atributo órfão convidaria o próximo leitor a ligar um clique inexistente.
+    return `<span class="status-badge ${escapeHtml(status)}${abrivel ? " compliance-clickable" : ""}"${
+      abrivel ? ` data-reanalysis-badge="${escapeAttr(uid)}"` : ""
+    } title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
   }
 
   async function renderReanalysisLog() {
@@ -5960,22 +6041,26 @@
         return;
       }
 
+      reanalysisLogRows.clear();
       tbody.innerHTML = data
-        .map((r) => {
+        .map((r, ri) => {
           // A URL do blog vem do global `domains` (mesmo lookup que periodicRowHtml faz
           // para a cor), então não precisa de JOIN no endpoint.
           const d = domains.find((x) => x.blog_name && x.blog_name === r.dominio);
           const papel = r.user_role
             ? ` <span class="role-tag ${escapeAttr(String(r.user_role))}">${escapeHtml(roleLabel(r.user_role))}</span>`
             : "";
+          // Cada linha guarda o próprio desfecho: o modal abre a partir dela, sem depender
+          // de nenhum cache de view (esta tela não passa por periodicAnalysisGroups).
+          const idBadge = `reanalysisBadge_${ri}`;
+          reanalysisLogRows.set(idBadge, r);
           return `<tr>
             <td style="white-space:nowrap">${escapeHtml(formatDateTime(r.created_at))}</td>
             <td>${escapeHtml(r.user_name || "—")}${papel}</td>
             <td><div class="blog-name"><span class="blog-dot" style="background:${escapeAttr(d?.color || "#7f5af0")}"></span>${escapeHtml(r.dominio)}</div></td>
             <td>${r.id_post != null ? escapeHtml(String(r.id_post)) : "—"}</td>
             <td>${escapeHtml(REANALYSIS_ACTION_LABELS[r.action] || r.action)}</td>
-            <td>${reanalysisLogStatusBadge(r)}</td>
-            <td class="reanalysis-resumo-cell">${reanalysisLogResumoCell(r)}</td>
+            <td>${reanalysisLogStatusBadge(r, idBadge)}</td>
             <td>${periodicPostLink(d?.url, r.id_post, true)}</td>
           </tr>`;
         })

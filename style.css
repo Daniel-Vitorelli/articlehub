@@ -1296,28 +1296,9 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   background: var(--accent-danger);
 }
 
+/* Clicável = tem desfecho para abrir. O log de reanálise reaproveita esta classe no badge
+   de Status (mesmo padrão da análise periódica) em vez de ganhar cursor próprio. */
 .compliance-clickable { cursor: pointer; }
-
-/* Resumo da análise na tabela de LOGS DE REANÁLISE (coluna "Resumo da Análise").
-   O resumo é um TEXT livre: sem teto, uma análise longa estica a coluna e empurra a tabela
-   para fora da tela (a .table-section rola na horizontal e o Link some).
-   O teto é um max-width no td. No table-layout AUTOMÁTICO (o padrão das .data-table) o
-   navegador respeita esse teto cortando o conteúdo, desde que o conteúdo seja truncável —
-   por isso o span interno é block + overflow:hidden + text-overflow:ellipsis.
-   NÃO usar table-layout:fixed aqui: com 8 colunas de largura mista ele distribui por igual
-   e a coluna do resumo (que é a que deve ser larga) encolhe até o título quebrar em 3 linhas. */
-#viewReanalysisLog th.reanalysis-resumo-th,
-#viewReanalysisLog td.reanalysis-resumo-cell {
-  max-width: 360px;
-}
-
-#viewReanalysisLog .reanalysis-resumo {
-  display: block;
-  max-width: 100%;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 
 /* Abas do resumo da análise — exclusivas da análise periódica.
    A solicitação comum mantém o layout empilhado de sempre (sem abas).
