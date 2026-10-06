@@ -546,11 +546,43 @@
     el.style.color = rem > 0 ? "var(--text-muted)" : "var(--accent-danger, #e74c3c)";
   }
 
+  // A cota pode ENCOLHER com linhas já marcadas: o admin baixou o limite no meio da sessão,
+  // ou a janela móvel andou em outra aba. Sem podar, a barra diria "8 selecionadas" com cota
+  // para 3 e o lote só descobriria o erro no fim, com 429 do servidor.
+  // Mantém as PRIMEIRAS da seleção (mesma ordem que o "Todas" usa) e sincroniza o DOM a
+  // partir do Set, que é a fonte de verdade — igual ao handler do "Todas".
+  function applyPeriodicQuotaToSelection() {
+    const room = periodicQuotaRoom(0);
+    if (room === null || selectedPeriodicKeys.size <= room) return;
+    const manter = new Set(Array.from(selectedPeriodicKeys).slice(0, room));
+    Array.from(selectedPeriodicKeys).forEach((k) => {
+      if (!manter.has(k)) selectedPeriodicKeys.delete(k);
+    });
+    document.querySelectorAll(".periodic-checkbox").forEach((cb) => {
+      const marcado = selectedPeriodicKeys.has(cb.dataset.periodicKey);
+      cb.checked = marcado;
+      const tr = cb.closest("tr");
+      if (tr) {
+        tr.classList.toggle("is-selected", marcado);
+        if (!marcado) tr.classList.remove("is-focused");
+      }
+    });
+    updateBulkUI();
+    showToast(
+      room > 0
+        ? `Sua cota de reanálises mudou: restaram ${room} selecionadas.`
+        : "Sua cota de reanálises mudou e não permite mais nenhuma seleção.",
+      "error",
+    );
+  }
+
   function loadPeriodicQuota() {
     return apiGet("periodic_analysis.php?quota=1")
       .then((data) => {
         periodicQuota = data && typeof data === "object" ? data : null;
         renderPeriodicQuotaHint();
+        // Toda releitura da cota reconfere a seleção em tela: o teto pode ter caído.
+        applyPeriodicQuotaToSelection();
       })
       .catch(() => {}); // silencioso: sem cota o front só não limita nada
   }
@@ -874,6 +906,11 @@
     if (["presence-log"].includes(viewName) && users.length === 0) {
       needs.push(apiGet("users.php").then(d => users = d));
     }
+    // Análise Periódica: a cota do usuário LOGADO é quem decide quantas linhas ele consegue
+    // marcar e o aviso da barra de lote. Reler na ENTRADA da view (e não só quando o cache
+    // está vazio, como faz o ensurePeriodicLoaded) é o que faz a tabela refletir um limite
+    // alterado pelo admin no meio da sessão — antes ela ficava com o valor antigo.
+    if (["compliance-analysis"].includes(viewName)) needs.push(loadPeriodicQuota());
     if (needs.length) await Promise.all(needs);
   }
 
@@ -5323,6 +5360,10 @@
       closeModal("modalUser");
       users = await apiGet("users.php");
       renderUsers();
+      // Se o admin mexeu na PRÓPRIA cota, a Análise Periódica ainda guarda o valor antigo em
+      // memória (periodicQuota é cache): o aviso "Restam N…" e o teto de seleção só mudariam
+      // no próximo reload da página. Relê na hora — e a seleção em tela é repodada junto.
+      if (editId && editId === Number(currentUser?.id)) loadPeriodicQuota();
     } catch (err) {
       alert("Erro: " + err.message);
     } finally {
