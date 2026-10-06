@@ -177,9 +177,15 @@
     }).format(new Date());
   }
 
+  // O que o MySQL manda é o relógio do SERVIDOR, sem offset ("YYYY-MM-DD HH:MM:SS"). O
+  // `new Date()` lê isso como hora LOCAL DO NAVEGADOR — e com o navegador em São Paulo a
+  // conversão se CANCELA: o relógio do banco (UTC) aparecia intacto na tela, 3h adiantado.
+  // Quem sabe converter é `parseServerDateTime`, que aplica o offset real do banco.
+  // Ele devolve null quando a string JÁ traz offset (ISO com Z, saída de toISOString) ou
+  // quando o offset ainda não chegou — nos dois casos o parse nativo abaixo é o correto.
   function formatDateTime(isoStr) {
     if (!isoStr || isoStr === PENDING_DATE) return "—";
-    const d = new Date(isoStr);
+    const d = parseServerDateTime(isoStr) || new Date(isoStr);
     try {
       return new Intl.DateTimeFormat("pt-BR", {
         timeZone: "America/Sao_Paulo",
@@ -974,8 +980,12 @@
     }
     applyRoleUI();
     setHeaderDate();
-    // Carrega dados essenciais em paralelo (blocking, rápido)
-    await loadAll();
+    // Carrega dados essenciais em paralelo (blocking, rápido).
+    // O offset do servidor entra NESTE mesmo lote: formatDateTime() depende dele para TODO
+    // timestamp da tela, e em série somaria uma ida ao servidor ao tempo de abertura — além
+    // de a primeira view nascer com as datas no fuso errado.
+    // Ele resolve mesmo quando falha (catch interno), então não segura o boot.
+    await Promise.all([loadAll(), ensureServerUtcOffset()]);
     updateNotifBadge();
     updateMsgBadge();
     navigateTo("dashboard");
@@ -1264,6 +1274,21 @@
     presenceTimer = setInterval(presenceBeat, period);
   }
 
+  // Ponto ÚNICO de escrita do offset do servidor. Existe por dois motivos:
+  //   1. Vários caminhos descobrem o offset (heartbeat, ?online=1, presence-log) e todos
+  //      precisam do mesmo efeito colateral — nenhum pode esquecer de repintar.
+  //   2. O offset costuma chegar DEPOIS da primeira renderização. Sem repintar, as datas já
+  //      desenhadas ficariam 3h adiantadas até o próximo reload, mesmo com o offset em mãos.
+  // O repinte só acontece na PRIMEIRA vez (null -> número) e só se uma view já está
+  // desenhada: no boot o showApp() ainda está carregando os dados, e renderizar ali rodaria
+  // sobre globais vazios.
+  function setServerUtcOffset(minutes) {
+    if (typeof minutes !== "number") return; // 0 é válido (servidor em UTC)
+    const primeiraVez = serverUtcOffsetMinutes === null;
+    serverUtcOffsetMinutes = minutes;
+    if (primeiraVez && $(".nav-link.active[data-view]")) refreshCurrentView();
+  }
+
   // Garante que serverUtcOffsetMinutes esteja preenchido ANTES de formatar presença.
   //
   // Por que existe: o offset só era capturado dentro de presenceBeat(), que não roda para
@@ -1271,6 +1296,9 @@
   // parseServerDateTime tratava o relógio do banco como UTC — "Online desde" deslocado.
   // Como os endpoints de leitura (presence-log, users?online) JÁ devolvem o campo, basta
   // pedi-lo aqui, sem depender do heartbeat.
+  // ATENÇÃO: `?online=1` é ADMIN-ONLY (presenceOnlineNow faz requireRole('admin')). Para os
+  // outros perfis esta chamada dá 403 e o offset só chega pelo heartbeat — que não roda para
+  // track_presence = 0. Ver a nota em showApp().
   let presenceOffsetLoading = null;
   function ensureServerUtcOffset() {
     if (serverUtcOffsetMinutes !== null) return Promise.resolve();
@@ -1278,7 +1306,7 @@
     presenceOffsetLoading = apiGet("presence.php?online=1")
       .then((res) => {
         if (res && typeof res.server_utc_offset_minutes === "number") {
-          serverUtcOffsetMinutes = res.server_utc_offset_minutes; // 0 é válido (UTC)
+          setServerUtcOffset(res.server_utc_offset_minutes);
         }
       })
       .catch(() => { /* offline: as células caem no fallback sem conversão */ })
@@ -1320,7 +1348,7 @@
       }
       // Offset do relógio do MySQL: 0 é válido (servidor em UTC), daí checar tipo.
       if (data && typeof data.server_utc_offset_minutes === "number") {
-        serverUtcOffsetMinutes = data.server_utc_offset_minutes;
+        setServerUtcOffset(data.server_utc_offset_minutes);
       }
       presenceFailures = 0;
       presenceIntervalMs =
@@ -4271,7 +4299,7 @@
       presenceOnlineMap = map;
       presenceOnlineMapAt = Date.now();
       if (res && typeof res.server_utc_offset_minutes === "number") {
-        serverUtcOffsetMinutes = res.server_utc_offset_minutes; // 0 é válido (UTC)
+        setServerUtcOffset(res.server_utc_offset_minutes);
       }
     } catch (e) {
       // Falhou: não zera o mapa, mas presenceOnlineMapAt fica velho e a coluna passa a
@@ -6142,8 +6170,8 @@
             <td><div class="blog-name"><span class="blog-dot" style="background:${escapeAttr(d?.color || "#7f5af0")}"></span>${escapeHtml(r.dominio)}</div></td>
             <td>${r.id_post != null ? escapeHtml(String(r.id_post)) : "—"}</td>
             <td>${escapeHtml(REANALYSIS_ACTION_LABELS[r.action] || r.action)}</td>
-            <td>${reanalysisLogStatusBadge(r, idBadge)}</td>
             <td>${reanalysisLogPrevBadge(r, idPrev)}</td>
+            <td>${reanalysisLogStatusBadge(r, idBadge)}</td>
             <td>${periodicPostLink(d?.url, r.id_post, true)}</td>
           </tr>`;
         })
@@ -6302,7 +6330,7 @@
       // o front foi atualizado.
       const data = Array.isArray(res) ? res : Array.isArray(res && res.data) ? res.data : [];
       if (res && typeof res.server_utc_offset_minutes === "number") {
-        serverUtcOffsetMinutes = res.server_utc_offset_minutes; // 0 é válido (UTC)
+        setServerUtcOffset(res.server_utc_offset_minutes);
       }
       // Resposta sem o offset (deploy antigo do back, ou envelope inesperado): busca em
       // separado. Sem isto, o parse cai no fallback e a coluna mostra o wall clock cru.
