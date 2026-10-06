@@ -2702,7 +2702,9 @@
 
   // Cabeçalho do modal em modo periódico: "dominio · Post #id · [status]".
   // Antes o modal não dizia qual artigo estava aberto — só "Resumo da Análise".
-  function complianceModalSubtitle(latest, dominio, idPost) {
+  // `sufixo` (opcional) entra no fim: o Log de Reanálise abre o MESMO modal para a análise
+  // atual e para a anterior, e sem esse rótulo os dois subtítulos seriam indistinguíveis.
+  function complianceModalSubtitle(latest, dominio, idPost, sufixo) {
     const parts = [];
     if (dominio) parts.push(escapeHtml(dominio));
     if (idPost !== "" && idPost != null) parts.push(`Post #${escapeHtml(String(idPost))}`);
@@ -2710,15 +2712,16 @@
     if (status) {
       parts.push(`<span class="status-badge ${escapeHtml(status)}">${complianceStatusLabel(status)}</span>`);
     }
+    if (sufixo) parts.push(escapeHtml(sufixo));
     return parts.join('<span class="compliance-modal-sep">·</span>');
   }
 
   // Subtítulo do modal: "dominio · Post #id · [status]". As duas origens do modal
   // (análise periódica e log de reanálise) escrevem o MESMO subtítulo — só o miolo difere.
-  function setComplianceModalSubtitle(latest, dominio, idPost) {
+  function setComplianceModalSubtitle(latest, dominio, idPost, sufixo) {
     const sub = document.getElementById("complianceModalSubtitle");
     if (!sub) return;
-    const html = complianceModalSubtitle(latest, dominio, idPost);
+    const html = complianceModalSubtitle(latest, dominio, idPost, sufixo);
     sub.innerHTML = html;
     sub.style.display = html ? "" : "none";
   }
@@ -2740,13 +2743,13 @@
   // listar — a barra ficava com uma única aba, que não serve para nada. Sem `is-periodic` a
   // barra cai no display:none padrão do CSS e sobra só o painel do resumo, porque
   // activateComplianceTab() oculta os outros dois.
-  function setupComplianceChromeForLog(latest, dominio, idPost) {
+  function setupComplianceChromeForLog(latest, dominio, idPost, sufixo) {
     const modal = document.getElementById("modalCompliance");
     if (!modal) return;
     // Remove o `is-periodic` de uma abertura anterior: o modal é o MESMO nó nas duas telas.
     modal.classList.remove("is-periodic");
     modal.classList.add("is-reanalysis-log");
-    setComplianceModalSubtitle(latest, dominio, idPost);
+    setComplianceModalSubtitle(latest, dominio, idPost, sufixo);
     modal.dataset.complianceTab = "";
     activateComplianceTab("resumo");
   }
@@ -2781,13 +2784,17 @@
   // Mesmo modal do Resumo da Análise Periódica, aberto a partir do Log de Reanálise.
   // A diferença é a origem do dado: aqui não existe grupo/cache — a própria linha do log
   // já traz status e resumo (LEFT JOIN por analysis_id no endpoint).
-  function openComplianceModalForReanalysis(r) {
+  function openComplianceModalForReanalysis(r, sufixo) {
     const raw = r.status_compliance || "";
-    if (!raw || raw === "nao_analisado") return;
+    // Sem status não há o que mostrar: a linha não tem vínculo com uma análise.
+    // Mas `nao_analisado` COM resumo de verdade é conteúdo legítimo (o crawler rodou e
+    // concluiu "não analisado") — recusá-lo aqui deixaria a badge clicável e o clique morto,
+    // porque o `abrivel` do badge só olha o resumo. A fila já é barrada pela sentinela abaixo.
+    if (!raw) return;
     const resumo = r.resumo_analise != null ? String(r.resumo_analise).trim() : "";
     // Guarda própria (e não só o `abrivel` do badge): é aqui que um resumo mal formado
     // viraria modal. A comparação é pelo valor inteiro, nunca por includes.
-    if (resumo === "" || resumo.toLowerCase() === REANALYSIS_PENDING_RESUMO) return;
+    if (resumo === "" || isResumoSentinela(resumo)) return;
 
     const modal = $("#modalCompliance");
     if (!modal) return;
@@ -2814,7 +2821,8 @@
     document.body.style.overflow = "hidden";
 
     // Sem abas: o log não tem grupo, então Histórico e Comentários não teriam o que listar.
-    setupComplianceChromeForLog(r, r.dominio, r.id_post);
+    // `sufixo` diz de qual análise se trata (atual ou anterior) — ver reanalysisLogPrevLabels.
+    setupComplianceChromeForLog(r, r.dominio, r.id_post, sufixo);
 
     modal.classList.remove("has-comments");
     const comments = $("#complianceCommentsBlock");
@@ -4016,12 +4024,22 @@
     }
     // Log de reanálise: só o badge clicável abre (a linha inteira não é alvo — a coluna
     // Link tem âncora própria, e clicar em "Usuário" não deveria abrir modal nenhum).
+    // São DUAS colunas de status (atual e anterior), cada uma com seu gancho.
     const badge = e.target.closest("#reanalysisLogBody .status-badge[data-reanalysis-badge]");
-    if (!badge) return;
-    const row = reanalysisLogRows.get(badge.dataset.reanalysisBadge);
-    if (!row) return;
+    if (badge) {
+      const row = reanalysisLogRows.get(badge.dataset.reanalysisBadge);
+      if (!row) return;
+      e.preventDefault();
+      openComplianceModalForReanalysis(row);
+      return;
+    }
+    // Badge da análise ANTERIOR: mesmo modal, com o rótulo que diz que é ela.
+    const prevBadge = e.target.closest("#reanalysisLogBody .status-badge[data-reanalysis-prev-badge]");
+    if (!prevBadge) return;
+    const prev = reanalysisLogPrevRows.get(prevBadge.dataset.reanalysisPrevBadge);
+    if (!prev) return;
     e.preventDefault();
-    openComplianceModalForReanalysis(row);
+    openComplianceModalForReanalysis(prev, reanalysisLogPrevLabels.get(prevBadge.dataset.reanalysisPrevBadge));
   });
 
   // Foco visual na linha da análise periódica (sem mudar layout)
@@ -5966,7 +5984,7 @@
   // Quantas colunas a tabela tem de fato — base do colspan das linhas de estado vazio/erro.
   // Constante explícita em vez de número solto: acrescentar uma coluna e esquecer o colspan
   // desalinha a mensagem sem gerar nenhum erro visível no console.
-  const REANALYSIS_LOG_COLS = 7;
+  const REANALYSIS_LOG_COLS = 8;
 
   // Resumo que o próprio endpoint de reanálise grava ao criar a linha (ver
   // api/periodic_analysis.php). Distingue "ainda na fila" de "analisado, mas sem resumo" —
@@ -5977,8 +5995,12 @@
   // que MENCIONE "re-análise" seria falso positivo. Vale como fila, porém, mesmo com um
   // status diferente de nao_analisado: aí o texto é o marcador, não conteúdo a exibir —
   // abrir o modal mostraria "esperando re-analise" para quem clicasse em "Aprovado".
+  function isResumoSentinela(texto) {
+    return String(texto || "").trim().toLowerCase() === REANALYSIS_PENDING_RESUMO;
+  }
+
   function reanalysisLogResumoIsSentinela(r) {
-    return String(r.resumo_analise || "").trim().toLowerCase() === REANALYSIS_PENDING_RESUMO;
+    return isResumoSentinela(r.resumo_analise);
   }
 
   // Fila: ainda não há desfecho, então não há o que abrir em modal.
@@ -5989,6 +6011,9 @@
   // Desfecho de cada linha, para o modal ler sem depender de cache de outra view.
   // Repovoado a cada render (as linhas são substituídas, não recicladas).
   const reanalysisLogRows = new Map();
+  // Idem para a análise anterior, mais o rótulo que diz que é ela (vai no subtítulo do modal).
+  const reanalysisLogPrevRows = new Map();
+  const reanalysisLogPrevLabels = new Map();
 
   // Mesmo padrão de periodicRowHtml: o badge de status vira a porta do modal
   // (`.compliance-clickable`), e o clique é delegado — nada de onclick inline.
@@ -6016,6 +6041,30 @@
     // e um atributo órfão convidaria o próximo leitor a ligar um clique inexistente.
     return `<span class="status-badge ${escapeHtml(status)}${abrivel ? " compliance-clickable" : ""}"${
       abrivel ? ` data-reanalysis-badge="${escapeAttr(uid)}"` : ""
+    } title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
+  }
+
+  // Análise ANTERIOR do mesmo post (prev_* no endpoint). Mesmo padrão do badge de cima —
+  // mesma classe, mesmo gancho de modal —, mas com duas diferenças de propósito:
+  //   1. O rótulo é o status CRU. "Aguardando análise" descreve a fila DESTE pedido; numa
+  //      análise passada, a sentinela significa que ela nunca produziu resultado, não que
+  //      algo está esperando. Chamar de "aguardando" ali seria mentir sobre o passado.
+  //   2. Sem análise anterior (1ª do post, ou analysis_id NULL) devolve "—": é ausência de
+  //      dado, não um estado — não há o que afirmar.
+  function reanalysisLogPrevBadge(r, uid) {
+    const status = r.prev_status_compliance || "";
+    if (!status) return "—";
+
+    const resumo = String(r.prev_resumo_analise || "").trim();
+    const sentinela = isResumoSentinela(resumo);
+    const abrivel = resumo !== "" && !sentinela;
+    const label = complianceStatusLabel(status);
+    const title = abrivel
+      ? "Ver o resumo da análise anterior"
+      : (sentinela ? "Análise anterior sem resultado registrado" : label);
+
+    return `<span class="status-badge ${escapeHtml(status)}${abrivel ? " compliance-clickable" : ""}"${
+      abrivel ? ` data-reanalysis-prev-badge="${escapeAttr(uid)}"` : ""
     } title="${escapeAttr(title)}">${escapeHtml(label)}</span>`;
   }
 
@@ -6058,6 +6107,8 @@
       }
 
       reanalysisLogRows.clear();
+      reanalysisLogPrevRows.clear();
+      reanalysisLogPrevLabels.clear();
       tbody.innerHTML = data
         .map((r, ri) => {
           // A URL do blog vem do global `domains` (mesmo lookup que periodicRowHtml faz
@@ -6070,6 +6121,21 @@
           // de nenhum cache de view (esta tela não passa por periodicAnalysisGroups).
           const idBadge = `reanalysisBadge_${ri}`;
           reanalysisLogRows.set(idBadge, r);
+          // A análise anterior vira um objeto com a MESMA forma de uma linha do log, para o
+          // modal ser o mesmo (openComplianceModalForReanalysis lê status/resumo/dominio/post).
+          // O rótulo extra diz de qual das duas análises se trata — sem ele, o subtítulo das
+          // duas seria idêntico e o usuário não saberia o que está lendo.
+          const idPrev = `reanalysisPrevBadge_${ri}`;
+          reanalysisLogPrevRows.set(idPrev, {
+            status_compliance: r.prev_status_compliance,
+            resumo_analise: r.prev_resumo_analise,
+            dominio: r.dominio,
+            id_post: r.id_post,
+          });
+          const rotuloPrev = r.prev_created_at
+            ? `Análise anterior (${formatDateTime(r.prev_created_at)})`
+            : "Análise anterior";
+          reanalysisLogPrevLabels.set(idPrev, rotuloPrev);
           return `<tr>
             <td style="white-space:nowrap">${escapeHtml(formatDateTime(r.created_at))}</td>
             <td>${escapeHtml(r.user_name || "—")}${papel}</td>
@@ -6077,6 +6143,7 @@
             <td>${r.id_post != null ? escapeHtml(String(r.id_post)) : "—"}</td>
             <td>${escapeHtml(REANALYSIS_ACTION_LABELS[r.action] || r.action)}</td>
             <td>${reanalysisLogStatusBadge(r, idBadge)}</td>
+            <td>${reanalysisLogPrevBadge(r, idPrev)}</td>
             <td>${periodicPostLink(d?.url, r.id_post, true)}</td>
           </tr>`;
         })

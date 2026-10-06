@@ -14,6 +14,10 @@
 //  o grupo pode já ter recebido OUTRA análise depois; o que interessa aqui é o desfecho
 //  do pedido registrado nesta linha do log.
 //
+//  Mostra ainda a ANÁLISE ANTERIOR do mesmo post (prev_*), para comparar antes/depois do
+//  pedido. O elo é (dominio, id_post) com id menor que o do pedido — a análise imediatamente
+//  anterior, não a última do grupo. Ver o comentário do LEFT JOIN `prev` mais abaixo.
+//
 //  A linha nasce com status 'nao_analisado' + resumo 'esperando re-analise' e é
 //  SOBRESCRITA depois pelo crawler externo (n8n) quando a análise termina. Nada neste
 //  projeto escreve o resultado — por isso o front lê o valor atual, sem cache.
@@ -72,14 +76,34 @@ function listReanalysisLog(): void
     // COALESCE no id_post/dominio não é necessário: eles já vêm desnormalizados da própria
     // tabela de log, que é a fonte da verdade da auditoria (analysis_id pode apontar para
     // uma linha cujo id_post tenha sido corrigido depois).
+    // prev é o TERCEIRO LEFT JOIN: a análise ANTERIOR do mesmo post — a imediatamente mais
+    // antiga que a deste pedido. Como isto é um log de REanálise, quase sempre existe uma.
+    // O elo é (dominio, id_post) + id menor, e não o grupo solto: o que interessa é a análise
+    // que veio ANTES desta, não a última do grupo (o grupo pode ter recebido análises depois).
+    // MAX(id) em vez de ORDER BY ... LIMIT 1: id é AUTO_INCREMENT e anda junto com created_at,
+    // então o maior id abaixo do atual é exatamente o anterior — e o subselect fica sargável
+    // pelo índice (dominio, id_post).
+    // `<=>` no id_post porque a coluna é INT NULL ('' viraria 0 na comparação com `=`).
+    // analysis_id NULL (linha antiga) ou pedido que é a 1ª análise do post → prev fica NULL,
+    // e a tela mostra "—" em vez de inventar uma análise anterior.
     $stmt = $db->prepare(
         "SELECT prl.id, prl.user_id, prl.dominio, prl.id_post, prl.analysis_id,
                 prl.action, prl.created_at,
                 u.name AS user_name, u.role AS user_role,
-                pa.status_compliance, pa.resumo_analise
+                pa.status_compliance, pa.resumo_analise,
+                prev.status_compliance AS prev_status_compliance,
+                prev.resumo_analise AS prev_resumo_analise,
+                prev.created_at AS prev_created_at
          FROM periodic_reanalysis_log prl
          LEFT JOIN users u ON u.id = prl.user_id
          LEFT JOIN periodic_analysis pa ON pa.id = prl.analysis_id
+         LEFT JOIN periodic_analysis prev ON prev.id = (
+             SELECT MAX(pa2.id)
+             FROM periodic_analysis pa2
+             WHERE pa2.dominio = prl.dominio
+               AND pa2.id_post <=> prl.id_post
+               AND pa2.id < prl.analysis_id
+         )
          $whereSql
          ORDER BY prl.created_at DESC, prl.id DESC
          LIMIT 500"

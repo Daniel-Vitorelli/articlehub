@@ -448,9 +448,11 @@
               <thead>
                 <!-- Sem larguras fixas: nenhuma outra tabela do app usa width em th.
                      O resumo não tem coluna própria — ele abre no modal de compliance
-                     ao clicar na badge de Status (mesmo padrão da Análise Periódica). -->
+                     ao clicar na badge de Status (mesmo padrão da Análise Periódica).
+                     "Status Anterior" é a análise imediatamente anterior deste post
+                     (é um log de REanálise), com o mesmo clique-para-o-modal. -->
                 <tr>
-                  <th>Data/Hora</th><th>Usuário</th><th>Blog</th><th>Post</th><th>Origem</th><th>Status</th><th>Link</th>
+                  <th>Data/Hora</th><th>Usuário</th><th>Blog</th><th>Post</th><th>Origem</th><th>Status</th><th>Status Anterior</th><th>Link</th>
                 </tr>
               </thead>
               <tbody id="reanalysisLogBody"></tbody>
