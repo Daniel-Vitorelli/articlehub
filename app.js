@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.8";
+  const APP_VERSION = "1.7.9";
   // ---- Presença (registro de presença) ----
   // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
   // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
@@ -4424,9 +4424,10 @@
       .map(
         (d) => `
       <tr>
-        <td><div class="blog-name"><span class="blog-dot" style="background:${d.color}"></span><strong>${escapeHtml(d.blog_name)}</strong></div></td>
+        <td><div class="blog-name"><span class="blog-dot" style="background:${escapeAttr(d.color)}"></span><strong>${escapeHtml(d.blog_name)}</strong></div></td>
         <td><a href="${escapeHtml(d.url)}" target="_blank" style="color:var(--accent-info);text-decoration:none">${escapeHtml(d.url)}</a></td>
         <td>${escapeHtml(d.niche)}</td>
+        <td>${d.language ? escapeHtml(d.language) : "—"}</td>
         <td style="text-align:center;">
           <label style="cursor:${isAdmin ? "pointer" : "not-allowed"}; display:inline-flex; align-items:center; justify-content:center;">
             <input type="checkbox" data-automacao-id="${d.id}" ${Number(d.automacao_imagem) ? "checked" : ""} ${isAdmin ? "" : "disabled"} title="${isAdmin ? "Ativar/desativar automação de imagem" : "Apenas admins podem alterar"}" style="width:18px; height:18px; accent-color:var(--accent-primary); cursor:${isAdmin ? "pointer" : "not-allowed"};">
@@ -5392,10 +5393,55 @@
   }
 
   // ---- Domain CRUD (admin) ----
+  // Paleta usada como cor inicial de um domínio novo (o backend aceita qualquer #RRGGBB).
+  const DOMAIN_COLORS = [
+    "#7f5af0",
+    "#2cb67d",
+    "#39a0ed",
+    "#f0a500",
+    "#e53170",
+    "#ff6b6b",
+    "#48bfe3",
+    "#f72585",
+  ];
+
+  // <input type="color"> só aceita #rrggbb: um valor legado fora do formato viraria
+  // preto silenciosamente, então cai no padrão da coluna.
+  function setDomainColorInput(value) {
+    const input = $("#domainColor");
+    if (!input) return;
+    const raw = String(value || "").trim();
+    const hex = /^#[0-9a-fA-F]{6}$/.test(raw) ? raw.toLowerCase() : "#7f5af0";
+    input.value = hex;
+    const out = $("#domainColorValue");
+    if (out) out.textContent = hex;
+  }
+
+  // Sugestões de idioma = valores JÁ gravados em domains.language. A tabela `languages`
+  // guarda códigos (pt-br/en/es) e não é o mesmo vocabulário deste campo.
+  function refreshDomainLanguageOptions() {
+    const list = $("#domainLanguageOptions");
+    if (!list) return;
+    const values = new Set();
+    domains.forEach((d) => {
+      const v = String(d.language || "").trim();
+      if (v) values.add(v);
+    });
+    list.innerHTML = [...values]
+      .sort((a, b) => a.localeCompare(b, "pt-BR"))
+      .map((v) => `<option value="${escapeAttr(v)}"></option>`)
+      .join("");
+  }
+
   function openNewDomain() {
     $("#modalDomainTitle").textContent = "🌐 Novo Domínio";
     $("#formDomain").reset();
     $("#domainEditId").value = "";
+    // reset() volta ao value do HTML: a cor sorteada tem de ser reaplicada depois.
+    setDomainColorInput(
+      DOMAIN_COLORS[Math.floor(Math.random() * DOMAIN_COLORS.length)],
+    );
+    refreshDomainLanguageOptions();
     openModal("modalDomain");
   }
 
@@ -5408,6 +5454,10 @@
     form.querySelector('[name="url"]').value = d.url;
     form.querySelector('[name="niche"]').value = d.niche;
     form.querySelector('[name="active"]').value = d.active ? "true" : "false";
+    form.querySelector('[name="language"]').value = d.language || "";
+    form.querySelector('[name="bloco_anuncio"]').value = d.bloco_anuncio || "";
+    setDomainColorInput(d.color);
+    refreshDomainLanguageOptions();
     $("#domainEditId").value = d.id;
     openModal("modalDomain");
   }
@@ -5425,34 +5475,21 @@
     const fd = new FormData(form);
     const editId = Number($("#domainEditId").value);
 
-    const colors = [
-      "#7f5af0",
-      "#2cb67d",
-      "#39a0ed",
-      "#f0a500",
-      "#e53170",
-      "#ff6b6b",
-      "#48bfe3",
-      "#f72585",
-    ];
+    const payload = {
+      blogName: fd.get("blogName"),
+      url: fd.get("url"),
+      niche: fd.get("niche"),
+      color: fd.get("color"),
+      language: String(fd.get("language") || "").trim(),
+      bloco_anuncio: String(fd.get("bloco_anuncio") || ""),
+      active: fd.get("active") === "true",
+    };
 
     try {
       if (editId) {
-        await apiPut("domains.php", {
-          id: editId,
-          blogName: fd.get("blogName"),
-          url: fd.get("url"),
-          niche: fd.get("niche"),
-          active: fd.get("active") === "true",
-        });
+        await apiPut("domains.php", { id: editId, ...payload });
       } else {
-        await apiPost("domains.php", {
-          blogName: fd.get("blogName"),
-          url: fd.get("url"),
-          niche: fd.get("niche"),
-          active: fd.get("active") === "true",
-          color: colors[Math.floor(Math.random() * colors.length)],
-        });
+        await apiPost("domains.php", payload);
       }
       closeModal("modalDomain");
       domains = await apiGet("domains.php");
@@ -7019,6 +7056,11 @@
     $("#btnSubmitDomain").addEventListener("click", (e) => {
       e.preventDefault();
       submitDomain();
+    });
+    // Espelha o hex ao lado do seletor de cor (o swatch sozinho não diz o valor).
+    $("#domainColor").addEventListener("input", (e) => {
+      const out = $("#domainColorValue");
+      if (out) out.textContent = String(e.target.value || "").toLowerCase();
     });
 
     // Filters

@@ -1717,6 +1717,43 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   min-height: 90px;
 }
 
+/* Cor do domínio: swatch nativo + hex ao lado. Fica DEPOIS de .form-input para
+   vencer o `width: 100%` (mesma especificidade, decide a ordem). */
+.color-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.form-color {
+  width: 54px;
+  min-width: 54px;
+  height: 42px;
+  padding: 4px;
+  cursor: pointer;
+}
+
+.form-color::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-color::-webkit-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+
+.form-color::-moz-color-swatch {
+  border: none;
+  border-radius: 4px;
+}
+
+.color-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  letter-spacing: 0.02em;
+}
+
 .form-row {
   display: grid;
   grid-template-columns: 1fr 1fr;

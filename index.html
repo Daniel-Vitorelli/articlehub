@@ -543,6 +543,7 @@
                   <th>Nome do Blog</th>
                   <th>Domínio (URL)</th>
                   <th>Nicho</th>
+                  <th>Idioma</th>
                   <th style="text-align:center;" title="Automação de imagem - apenas admins podem alterar">🤖 Automação Imagem</th>
                   <th>Status</th>
                   <th>Ações</th>
@@ -977,6 +978,27 @@
                 <option value="false">Inativo</option>
               </select>
             </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="domainColor">Cor</label>
+              <div class="color-field">
+                <input type="color" class="form-input form-color" id="domainColor" name="color" value="#7f5af0">
+                <span class="color-value" id="domainColorValue">#7f5af0</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="domainLanguage">Idioma</label>
+              <!-- Texto livre + sugestões: os domínios já gravados usam o NOME do idioma
+                   ("Portugues", "Ingles"), não o código da tabela `languages` (pt-br, en).
+                   Um <select> de códigos reescreveria esses valores. -->
+              <input type="text" class="form-input" id="domainLanguage" name="language" list="domainLanguageOptions" maxlength="20" autocomplete="off" placeholder="Ex: Portugues">
+              <datalist id="domainLanguageOptions"></datalist>
+            </div>
+          </div>
+          <div class="form-group">
+            <label for="domainBlocoAnuncio">Bloco de anúncio</label>
+            <textarea class="form-textarea" id="domainBlocoAnuncio" name="bloco_anuncio" rows="3" placeholder="Ex: 1 bloco antes do primeiro parágrafo e outro depois"></textarea>
           </div>
         </form>
       </div>
