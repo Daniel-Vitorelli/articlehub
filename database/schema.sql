@@ -396,6 +396,11 @@ CREATE TABLE IF NOT EXISTS `presence_sessions` (
   `exited_at`    DATETIME        DEFAULT NULL COMMENT 'NULL = ainda online',
   `last_seen_at` DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Ultimo heartbeat de QUALQUER aba viva',
   `exit_reason`  VARCHAR(20)     DEFAULT NULL COMMENT 'closed | timeout | logout',
+  -- Origem do 1º batimento: diagnóstico de cliente (qual navegador/dispositivo/rede gerou
+  -- a sessão). Não é usado por nenhuma tela. Adicionado depois; api/presence.php cria em
+  -- instalações antigas via SHOW COLUMNS + ALTER e tolera a ausência.
+  `user_agent`   VARCHAR(255)    DEFAULT NULL COMMENT 'UA do 1o batimento (diagnostico)',
+  `ip`           VARCHAR(45)     DEFAULT NULL COMMENT 'IP do 1o batimento (diagnostico)',
 
   INDEX idx_ps_user_entered (user_id, entered_at),
   -- (user_id, exited_at): serve à graça anti-F5 e ao histórico filtrado por usuário.
@@ -408,6 +413,13 @@ CREATE TABLE IF NOT EXISTS `presence_sessions` (
 -- RETENÇÃO: presence_sessions é append-only e cresce para sempre sem expurgo. A varredura
 -- apaga em lote (LIMIT 1000) as sessões FECHADAS com mais de presence_retention_days dias.
 -- 0 = NUNCA expurgar (zero é valor válido, não "ausente" — nunca checar com `if ($v)`).
+
+-- BATIDA ÚNICA: cliente que manda o 1º heartbeat e desaparece (aba congelada/descartada,
+-- processo morto, rede caída) não é visita. A varredura APAGA a linha em vez de fechá-la:
+-- fechada, ela aparecia no histórico como "1 min / Tempo esgotado" (exited_at = last_seen
+-- + limbo) e enchia a tela de ruído. Condições em sweepPresence(): no máximo 2 batidas no
+-- mesmo segundo, limbo vencido, nenhum 'closed'/'logout' (que provam vida), nenhuma aba
+-- viva e janela de 7 dias (o backlog antigo fica preservado).
 
 -- Duração NÃO é coluna: gerada não pode chamar NOW() (não determinística) e calculada
 -- estaria sempre errada na linha aberta. Computa na leitura com
@@ -608,12 +620,16 @@ ON DUPLICATE KEY UPDATE theme=VALUES(theme);
 --   exited_at DATETIME DEFAULT NULL,
 --   last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 --   exit_reason VARCHAR(20) DEFAULT NULL,
+--   user_agent VARCHAR(255) DEFAULT NULL,
+--   ip VARCHAR(45) DEFAULT NULL,
 --   INDEX idx_ps_user_entered (user_id, entered_at),
 --   INDEX idx_ps_user_exited (user_id, exited_at),
 --   INDEX idx_ps_open (exited_at, last_seen_at),
 --   INDEX idx_ps_entered (entered_at)
 -- ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- ALTER TABLE presence_sessions ADD INDEX idx_ps_user_exited (user_id, exited_at);
+-- ALTER TABLE presence_sessions ADD COLUMN user_agent VARCHAR(255) DEFAULT NULL;
+-- ALTER TABLE presence_sessions ADD COLUMN ip VARCHAR(45) DEFAULT NULL;
 -- CREATE TABLE IF NOT EXISTS presence_tabs (
 --   tab_token VARCHAR(64) NOT NULL PRIMARY KEY,
 --   session_id INT UNSIGNED NOT NULL,

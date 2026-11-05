@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.8.0";
+  const APP_VERSION = "1.8.1";
   // ---- Presença (registro de presença) ----
   // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
   // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
@@ -82,6 +82,11 @@
   // Sem rede, o backoff não precisa passar disso: o listener "online" é quem traz a
   // batida de volta, então crescer até 10min só atrasa a recuperação.
   const PRESENCE_BACKOFF_OFFLINE_MS = 60000;
+  // Teto de UMA batida. Sem ele, um fetch que nunca resolve deixava presenceBeatInFlight
+  // = true para sempre: o timer continuava disparando, cada disparo saía pelo guard, e o
+  // usuário virava "offline" sem nenhum erro na tela. 15s é folgado para um POST que
+  // normalmente responde em ~200ms e curto o bastante para não perder o próximo ciclo.
+  const PRESENCE_BEAT_TIMEOUT_MS = 15000;
   // Acima desta idade o mapa de online não é confiável: a coluna mostra "Desconhecido"
   // em vez de afirmar "Online" com dado velho (ou "Offline" sem nunca ter perguntado).
   const PRESENCE_STATUS_MAX_AGE_MS = 180000; // 3 min
@@ -1363,16 +1368,33 @@
     // 0 = não rastrear quando hidden; 1 = sim (padrão).
     if (document.hidden && !presenceTrackMinimized()) return;
     presenceBeatInFlight = true;
+    // Teto por requisição: ver PRESENCE_BEAT_TIMEOUT_MS. O timer é limpo no finally, que
+    // também libera o guard — é o par que garante que UMA requisição travada não congele
+    // o batimento para o resto da vida da página.
+    const beatCtrl =
+      typeof AbortController === "function" ? new AbortController() : null;
+    const beatKiller = beatCtrl
+      ? setTimeout(() => beatCtrl.abort(), PRESENCE_BEAT_TIMEOUT_MS)
+      : null;
     try {
       const res = await fetch(`${API}/presence.php?action=heartbeat`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tab: presenceToken() }),
+        signal: beatCtrl ? beatCtrl.signal : undefined,
       });
-      // Sessão expirada: para o timer em silêncio. Não há handler global de 401 e não
-      // convém forçar logout daqui; a varredura do servidor fecha a sessão sozinha.
+      // Sessão expirada: para o timer. Não há handler global de 401 e não convém forçar
+      // logout daqui; a varredura do servidor fecha a sessão sozinha. Mas parar em
+      // SILÊNCIO era o pior desfecho: a pessoa continuava achando que estava online e o
+      // histórico registrava "Tempo esgotado" sem nenhuma pista. Agora fica no console e
+      // na tela.
       if (res.status === 401) {
+        console.warn("Presença: heartbeat recusado (401). Batimento interrompido.");
+        showToast(
+          "Sessão expirada: o registro de presença parou. Recarregue a página e entre de novo.",
+          "error",
+        );
         stopPresence(false);
         return;
       }
@@ -1418,6 +1440,10 @@
         schedulePresence(backoff);
       }
     } finally {
+      // Sempre: desarma o abort e libera o guard, inclusive nos returns acima (401 e
+      // unavailable). Um return que pulasse o clearTimeout deixaria um abort pendente
+      // matando a PRÓXIMA batida.
+      if (beatKiller) clearTimeout(beatKiller);
       presenceBeatInFlight = false;
     }
   }

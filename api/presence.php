@@ -28,6 +28,16 @@
 //  banco não tem permissão de DDL) a feature DEGRADA em silêncio — nunca 500, nunca
 //  fatal. A regra fail-closed vale para periodic_reanalysis_log, não para presence_*.
 //  O que o cliente recebe nesse caso é `unavailable: true` para parar de martelar.
+//
+//  BATIDA ÚNICA NÃO É VISITA: cliente que manda o primeiro heartbeat e desaparece (aba
+//  congelada/descartada, processo morto, rede caída) não prova que estava ali. A varredura
+//  APAGA essas linhas em vez de fechá-las — sem isso cada "despertar" da aba virava uma
+//  linha "1 min / Tempo esgotado" no histórico (ver sweepPresence()).
+//
+//  DIAGNÓSTICO: user_agent/ip do primeiro batimento ficam gravados na sessão. Sem eles não
+//  há como saber QUAL cliente gerou uma sessão esquisita (a tabela não tinha nenhum dado
+//  de origem). Colunas criadas no CREATE (instalação nova) e por ALTER gateado (antigas);
+//  todo uso tolera a ausência.
 // ============================================
 require_once __DIR__ . '/config.php';
 
@@ -44,8 +54,17 @@ const PRESENCE_TIMEOUT_MAX      = 900;
 // Graça anti-F5 (reabrir a sessão fechada no reload). O piso é FIXO porque o buraco do
 // F5 depende do tempo de CARGA da página, não do intervalo; o teto acompanha o intervalo
 // porque uma aba que só bate a cada 5min também demora a provar que voltou.
-const PRESENCE_REOPEN_GRACE_MIN = 60;
-const PRESENCE_REOPEN_GRACE_MAX = 300;
+//
+// Piso 300s (era 60s): 60s cobria o F5, mas não o cliente que sai e volta — cada retorno
+// depois de 1 min abria uma LINHA NOVA no histórico. 5 min absorve a ida-e-volta curta sem
+// fundir visitas de verdade (o que inflaria a duração: exited_at continua sendo
+// last_seen_at + limbo, nunca NOW()).
+const PRESENCE_REOPEN_GRACE_MIN = 300;
+const PRESENCE_REOPEN_GRACE_MAX = 900;
+
+// Janela em que uma sessão morta por UMA batida só ainda pode ser apagada. Evita que o
+// primeiro sweep depois do deploy varra o histórico antigo inteiro de uma vez.
+const PRESENCE_SINGLE_BEAT_PURGE_WINDOW = 600; // segundos
 
 // Retenção do histórico (dias). 0 = NUNCA expurgar (0 é um valor válido, não "ausente").
 // Configurável pelo admin em app_settings.presence_retention_days.
@@ -108,6 +127,8 @@ function ensurePresenceTables(): void
             '  exited_at DATETIME DEFAULT NULL COMMENT \'NULL = ainda online (unico criterio de aberto)\',' .
             '  last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT \'Ultimo heartbeat de QUALQUER aba viva\',' .
             '  exit_reason VARCHAR(20) DEFAULT NULL COMMENT \'closed | timeout | logout\',' .
+            '  user_agent VARCHAR(255) DEFAULT NULL COMMENT \'UA do 1o batimento (diagnostico)\',' .
+            '  ip VARCHAR(45) DEFAULT NULL COMMENT \'IP do 1o batimento (diagnostico)\',' .
             '  INDEX idx_ps_user_entered (user_id, entered_at),' .
             '  INDEX idx_ps_user_exited (user_id, exited_at),' .
             '  INDEX idx_ps_open (exited_at, last_seen_at),' .
@@ -148,6 +169,34 @@ function ensurePresenceIndexes(): void
         }
     } catch (Exception $e) {
         // sem o índice as consultas só ficam um pouco piores: não derruba nada
+    }
+}
+
+// Colunas de diagnóstico (user_agent/ip). Instalação nova já nasce com elas no CREATE;
+// instalação antiga ganha por ALTER gateado por SHOW COLUMNS (MySQL não tem
+// ADD COLUMN IF NOT EXISTS). Devolve se as colunas estão disponíveis, porque quem
+// ESCREVE precisa saber: o INSERT não pode citar coluna que não existe (erro 1054 → 500
+// em cada batida). Roda dentro do gate de PRESENCE_SCHEMA_EVERY.
+function ensurePresenceColumns(): bool
+{
+    try {
+        $db = getDB();
+        if (!(bool)$db->query("SHOW COLUMNS FROM presence_sessions LIKE 'user_agent'")->fetch()) {
+            $db->exec(
+                'ALTER TABLE presence_sessions ADD COLUMN user_agent VARCHAR(255) DEFAULT NULL ' .
+                "COMMENT 'UA do 1o batimento (diagnostico)'"
+            );
+        }
+        if (!(bool)$db->query("SHOW COLUMNS FROM presence_sessions LIKE 'ip'")->fetch()) {
+            $db->exec(
+                'ALTER TABLE presence_sessions ADD COLUMN ip VARCHAR(45) DEFAULT NULL ' .
+                "COMMENT 'IP do 1o batimento (diagnostico)'"
+            );
+        }
+        return true;
+    } catch (Exception $e) {
+        // sem permissão de DDL: a presença continua, só sem os campos de diagnóstico
+        return false;
     }
 }
 
@@ -253,6 +302,15 @@ function presenceMaintenance(PDO $db, array $cfg, bool $forceSweep = false): boo
         $_SESSION['presence_schema_at'] = $now;
         ensurePresenceTables();
         ensurePresenceIndexes();
+        // Resultado guardado na sessão PHP: quem escreve (heartbeat) e quem lê (histórico)
+        // consultam daqui em vez de repetir SHOW COLUMNS a cada requisição.
+        $_SESSION['presence_cols'] = ensurePresenceColumns();
+        try {
+            $_SESSION['presence_track_col'] = (bool)$db
+                ->query("SHOW COLUMNS FROM users LIKE 'track_presence'")->fetch();
+        } catch (Exception $e) {
+            $_SESSION['presence_track_col'] = false;
+        }
     }
 
     $sweepAt = (int)($_SESSION['presence_sweep_at'] ?? 0);
@@ -274,6 +332,33 @@ function sweepPresence(PDO $db, array $cfg): void
         $stale = "NOW() - INTERVAL $limbo SECOND";
 
         $db->exec("DELETE FROM presence_tabs WHERE last_seen_at < $stale");
+
+        // Sessão de UMA batida só = cliente que abriu a página, mandou o primeiro
+        // heartbeat e sumiu sem mandar o segundo (aba congelada/descartada, processo
+        // morto, rede caiu). Não é visita: é ruído de telemetria — e, como o timeout
+        // fecha em last_seen_at + limbo, cada uma virava uma linha "1 min / Tempo
+        // esgotado" no histórico. Some com a linha em vez de fechá-la.
+        //
+        // Condições (todas necessárias para não apagar visita de verdade):
+        //   a) no máximo 2 batidas dentro do MESMO segundo (last_seen <= entered + 1s):
+        //      com o intervalo mínimo de 15s, uma visita real sempre avança mais que isso;
+        //   b) já passou o limbo desde a última prova de vida (não apaga sessão viva);
+        //   c) o cliente morreu em silêncio — nunca 'closed'/'logout', que provam vida;
+        //   d) nenhuma aba viva apontando para a sessão;
+        //   e) janela de 7 dias: impede que o primeiro sweep depois do deploy varra todo o
+        //      histórico antigo de uma vez (o backlog fica preservado para análise).
+        $purge = (int)PRESENCE_SINGLE_BEAT_PURGE_WINDOW;
+        $db->exec(
+            "DELETE FROM presence_sessions
+             WHERE last_seen_at <= entered_at + INTERVAL 1 SECOND
+               AND last_seen_at < $stale
+               AND entered_at >= (NOW() - INTERVAL 7 DAY)
+               AND (exited_at IS NULL
+                    OR (exit_reason = 'timeout' AND exited_at >= (NOW() - INTERVAL $purge SECOND)))
+               AND NOT EXISTS (SELECT 1 FROM presence_tabs t WHERE t.session_id = presence_sessions.id)
+             ORDER BY id
+             LIMIT 500"
+        );
 
         // exited_at = last_seen_at + $limbo, NÃO NOW(): NOW() cobraria todo o buraco do
         // timeout como presença e inflaria a duração de cada crash em $limbo segundos.
@@ -355,13 +440,18 @@ function presenceHeartbeat(): void
         $uid = (int)$user['id'];
 
         // Usuário desmarcou o rastreamento? Não processa nada e avisa o front para parar.
+        // A existência da coluna vem do gate (presenceMaintenance): antes era um SELECT que
+        // estourava 1054 em produção (a coluna não existe lá) e o catch fingia que estava
+        // tudo bem — uma exceção e uma ida ao banco por batida, para nada.
         $tracked = true;
-        try {
-            $trk = $db->prepare('SELECT track_presence FROM users WHERE id = ? LIMIT 1');
-            $trk->execute([$uid]);
-            $tracked = (bool)($trk->fetchColumn() ?? 1);
-        } catch (Exception $e) {
-            // coluna pode não existir: assume rastreado (padrão do banco)
+        if (!empty($_SESSION['presence_track_col'])) {
+            try {
+                $trk = $db->prepare('SELECT track_presence FROM users WHERE id = ? LIMIT 1');
+                $trk->execute([$uid]);
+                $tracked = (bool)($trk->fetchColumn() ?? 1);
+            } catch (Exception $e) {
+                // corrida com um DROP COLUMN: assume rastreado (padrão do banco)
+            }
         }
         if (!$tracked) {
             jsonResponse(200, [
@@ -375,7 +465,13 @@ function presenceHeartbeat(): void
 
         $tab = presenceTabToken(getInput());
 
-        $sessionId = presenceResolveSession($db, $uid, $tab, (int)$cfg['grace']);
+        // Origem do batimento: gravada só na CRIAÇÃO da sessão (é diagnóstico de cliente,
+        // não telemetria por batida). Fica num array para não poluir a assinatura com
+        // quatro parâmetros soltos.
+        $client = presenceClientMeta();
+        $hasCols = !empty($_SESSION['presence_cols']);
+
+        $sessionId = presenceResolveSession($db, $uid, $tab, (int)$cfg['grace'], $client, $hasCols);
 
         // Upsert numa ida só. O UPDATE explicito de last_seen_at (em vez de ON UPDATE
         // CURRENT_TIMESTAMP) deixa claro que é o heartbeat que renova, não qualquer
@@ -467,10 +563,35 @@ function presenceTabToken(array $input): string
     return substr($tab, 0, 64);
 }
 
+// Origem do cliente para diagnóstico. O UA vem do header (o cliente escolhe, então serve
+// como pista, não como prova). O IP vem do X-Forwarded-For porque em produção há um proxy
+// (Traefik) na frente do Apache: REMOTE_ADDR seria o IP do proxy. Cada proxy ANEXA ao
+// header, então a ÚLTIMA entrada é a que o nosso proxy escreveu — pegar a primeira
+// aceitaria um XFF forjado pelo cliente.
+function presenceClientMeta(): array
+{
+    $ua = (string)($_SERVER['HTTP_USER_AGENT'] ?? '');
+    $ip = '';
+
+    $fwd = trim((string)($_SERVER['HTTP_X_FORWARDED_FOR'] ?? ''));
+    if ($fwd !== '') {
+        $hops = explode(',', $fwd);
+        $ip   = trim((string)end($hops));
+    }
+    if ($ip === '') {
+        $ip = (string)($_SERVER['REMOTE_ADDR'] ?? '');
+    }
+
+    return [
+        'ua' => substr($ua, 0, 255),
+        'ip' => substr($ip, 0, 45),
+    ];
+}
+
 // ============================================
 //  Sessão: achar a aberta, reabrir ou criar
 // ============================================
-function presenceResolveSession(PDO $db, int $uid, string $tab, int $grace): int
+function presenceResolveSession(PDO $db, int $uid, string $tab, int $grace, array $client, bool $hasCols): int
 {
     // Caminho comum (a aba já existe e a sessão dela continua aberta): uma consulta.
     $stmt = $db->prepare(
@@ -486,10 +607,10 @@ function presenceResolveSession(PDO $db, int $uid, string $tab, int $grace): int
         return (int)$row['session_id'];
     }
 
-    return presenceOpenSession($db, $uid, $grace);
+    return presenceOpenSession($db, $uid, $grace, $client, $hasCols);
 }
 
-function presenceOpenSession(PDO $db, int $uid, int $grace): int
+function presenceOpenSession(PDO $db, int $uid, int $grace, array $client, bool $hasCols): int
 {
     // Anti-corrida: duas abas abrindo juntas criariam duas sessões abertas. Falta índice
     // único parcial em MySQL (NULLs são distintos), então o lock nomeado é o caminho.
@@ -541,7 +662,14 @@ function presenceOpenSession(PDO $db, int $uid, int $grace): int
 
         // 3) Nova sessão. entered_at/last_seen_at vêm do DEFAULT do banco — nunca gerar
         //    timestamp no PHP (convenção: já houve skew de ~3h por isso).
-        $db->prepare('INSERT INTO presence_sessions (user_id) VALUES (?)')->execute([$uid]);
+        //    user_agent/ip só entram se as colunas existirem: citar coluna ausente dá 1054
+        //    e derrubaria TODA batida com 503 (instalação antiga sem o ALTER).
+        if ($hasCols) {
+            $db->prepare('INSERT INTO presence_sessions (user_id, user_agent, ip) VALUES (?, ?, ?)')
+                ->execute([$uid, $client['ua'], $client['ip']]);
+        } else {
+            $db->prepare('INSERT INTO presence_sessions (user_id) VALUES (?)')->execute([$uid]);
+        }
         return (int)$db->lastInsertId();
     } finally {
         if ($locked) {
@@ -616,7 +744,8 @@ function presenceOnlineNow(): void
             ]);
         }
     }
-    sweepPresence($db, $cfg); // leitura de admin é rara: varre sempre, sem gate
+    // Leitura de admin é rara: mantém o gate de schema/colunas e varre sempre, sem gate.
+    presenceMaintenance($db, $cfg, true);
 
     // O predicado do timeout é reaplicado na leitura: a varredura é lazy, então entre
     // dois heartbeats uma linha ainda pode estar aberta sem merecer estar.
@@ -656,7 +785,10 @@ function presenceHistory(): void
             ]);
         }
     }
-    sweepPresence($db, $cfg); // leitura de admin é rara: varre sempre, sem gate
+    // Leitura de admin é rara: mantém o gate de schema/colunas e varre sempre, sem gate.
+    // Precisa ser presenceMaintenance (e não sweepPresence direto) para $_SESSION
+    // ['presence_cols'] estar preenchido quando a lista de colunas do SELECT é montada.
+    presenceMaintenance($db, $cfg, true);
 
     $where  = [];
     $params = [];
@@ -715,8 +847,12 @@ function presenceHistory(): void
     // histórico — é justamente o caso que a auditoria precisa ver.
     // duration_estimated é DERIVADO de exit_reason (sem coluna nova): a duração de quem
     // caiu por timeout é um limite superior (last_seen_at + limbo), não um valor exato.
+    // user_agent/ip são DIAGNÓSTICO: o front não desenha essas colunas, mas elas respondem
+    // "qual cliente gerou esta sessão?" sem precisar de acesso ao banco. Só entram na lista
+    // se o ALTER gateado tiver rodado — citar coluna ausente derrubaria a leitura inteira.
+    $extraCols = !empty($_SESSION['presence_cols']) ? ', ps.user_agent, ps.ip' : '';
     $stmt = $db->prepare(
-        "SELECT ps.id, ps.user_id, ps.entered_at, ps.exited_at, ps.exit_reason, ps.last_seen_at,
+        "SELECT ps.id, ps.user_id, ps.entered_at, ps.exited_at, ps.exit_reason, ps.last_seen_at$extraCols,
                 TIMESTAMPDIFF(SECOND, ps.entered_at, COALESCE(ps.exited_at, NOW())) AS duration_seconds,
                 (ps.exited_at IS NULL) AS still_open,
                 (ps.exit_reason = 'timeout') AS duration_estimated,
