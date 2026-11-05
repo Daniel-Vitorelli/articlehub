@@ -1127,6 +1127,31 @@ tr.is-selected .periodic-checkbox.row-hover-checkbox,
   flex-shrink: 0;
 }
 
+/* Cor do domínio na tabela: só o hex (a bolinha ao lado do nome já dá a leitura
+   visual — repetir um swatch aqui seria o mesmo dado duas vezes na mesma linha). */
+.color-cell {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+}
+
+/* Texto longo (bloco de anúncio) em uma linha: o valor inteiro fica no title.
+   O corte é por CSS dentro de um <div>, não por `max-width` no <td> — em tabela
+   com layout automático o max-width da célula é ignorado. */
+.cell-truncate {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Cabeçalho desta tabela em uma linha só: com 9 colunas a coluna "Automação Imagem"
+   quebrava em duas e dobrava a altura do thead. Escopo nesta tabela, não em
+   .data-table th, para não alargar as outras. */
+.domains-table th {
+  white-space: nowrap;
+}
+
 /* Status Badge */
 .status-badge {
   display: inline-flex;

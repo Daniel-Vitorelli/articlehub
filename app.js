@@ -59,7 +59,7 @@
   const PERIODIC_SENTINEL_MARGIN = "500px"; // Alterar aqui o gatilho do infinite scroll
   const selectedPeriodicKeys = new Set();
   const POLL_INTERVAL_MS = 15000;
-  const APP_VERSION = "1.7.9";
+  const APP_VERSION = "1.8.0";
   // ---- Presença (registro de presença) ----
   // Presença NÃO vem da sessão do servidor: quem diz que o usuário está online é o
   // navegador, mandando um heartbeat enquanto a aba está aberta (ver api/presence.php).
@@ -4428,6 +4428,8 @@
         <td><a href="${escapeHtml(d.url)}" target="_blank" style="color:var(--accent-info);text-decoration:none">${escapeHtml(d.url)}</a></td>
         <td>${escapeHtml(d.niche)}</td>
         <td>${d.language ? escapeHtml(d.language) : "—"}</td>
+        <td><span class="color-cell">${d.color ? escapeHtml(d.color) : "—"}</span></td>
+        <td><div class="cell-truncate" title="${escapeAttr(d.bloco_anuncio || "")}">${d.bloco_anuncio ? escapeHtml(d.bloco_anuncio) : "—"}</div></td>
         <td style="text-align:center;">
           <label style="cursor:${isAdmin ? "pointer" : "not-allowed"}; display:inline-flex; align-items:center; justify-content:center;">
             <input type="checkbox" data-automacao-id="${d.id}" ${Number(d.automacao_imagem) ? "checked" : ""} ${isAdmin ? "" : "disabled"} title="${isAdmin ? "Ativar/desativar automação de imagem" : "Apenas admins podem alterar"}" style="width:18px; height:18px; accent-color:var(--accent-primary); cursor:${isAdmin ? "pointer" : "not-allowed"};">
